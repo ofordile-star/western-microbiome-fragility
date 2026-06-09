@@ -1,30 +1,14 @@
 # =============================================================================
-# NaturePaper_Fig2_revised.R
-# [REVISED — D1 interpretation updated to context-dependent dual immune mode]
-#
-# Figure 2 | Species-specific and richness-independent protection by
-#            Prevotella stercorea
-#
+# EcoCollapse_Fig2_BHcorrected.R
+# Figure 2 for "Tipping points in gut ecology"
+# REVISED: BH correction applied to WAZ×P.stercorea interaction p-values
+#          across family of 4 tests (int_d1_crp, int_d1_agp, int_d85_crp,
+#          int_d85_agp), consistent with IHAT Paper 2 (06_Figures.R)
 # Panels:
-#   A  Joint NB model IRRs — P. stercorea vs P. copri (species specificity)
-#
-#   B  Mediation: proportion of P.stercorea→ARI mediated by richness
-#
-#   C  Temporal antecedence: D85 P.stercorea abundance by illness
-#
-#   D  DUAL-TIMEPOINT nutritional gating panel (REVISED INTERPRETATION):
-#      Left subfigure:  D1  P.stercorea → CRP/AGP by WAZ (prospective baseline)
-#                       Low WAZ: CRP↓ (β=−0.037, p=0.016) — colonisation resistance
-#                       High WAZ: AGP↑ (β=+0.014, p=0.008) — sustained immune tone
-#                       Interaction: CRP p=0.015; AGP p=0.001
-#      Right subfigure: D85 P.stercorea → CRP/AGP by WAZ (post-follow-up)
-#                       High WAZ: CRP↑ (β=+0.064, p=0.037) and AGP↑ (β=+0.018, p=0.007)
-#                       Interaction: CRP p<0.001; AGP p<0.001
-#                       Interpret with caution: D85 microbiome partly encodes illness
-#                       history; signal reflects better immune engagement in
-#                       better-nourished, better-protected children
-#
-# Author:  Ogochukwu Ofordile, MRC Unit The Gambia at LSHTM
+#   a  Joint NB model IRRs (species specificity)
+#   b  Mediation (% ARI protection via richness)
+#   c  D85 P. stercorea distribution by illness group
+#   d  WAZ-stratified biomarker associations (dual timepoint, BH q-values)
 # =============================================================================
 
 library(tidyverse)
@@ -57,8 +41,8 @@ theme_nature <- theme_classic(base_size = 11) +
 
 col_ps      <- "#2166AC"
 col_pc      <- "#D6604D"
-col_high    <- "#2166AC"   # positive significant
-col_low     <- "#D6604D"   # negative significant
+col_high    <- "#2166AC"
+col_low     <- "#D6604D"
 pal_species <- c("P. stercorea" = col_ps, "P. copri" = col_pc)
 
 covs      <- "age_enrolment + gender_n + HAZ_enrolment"
@@ -85,7 +69,7 @@ joint_res <- tidy(fit_joint, conf.int = TRUE) %>%
     IRR_hi = exp(conf.high),
     species = factor(
       recode(term, "log_Pstercorea" = "P. stercorea",
-                   "log_Pcopri"     = "P. copri"),
+             "log_Pcopri"     = "P. copri"),
       levels = c("P. copri", "P. stercorea")
     )
   )
@@ -107,7 +91,7 @@ cat(sprintf("P.stercorea IRR=%.4f p=%.4f; P.copri IRR=%.4f p=%.4f\n",
 cat(sprintf("Mediation proportion (ARI freq): %.1f%%\n", prop_ari_freq * 100))
 
 # --------------------------------------------------------------------------- #
-# COMPUTE: WAZ stratification — D85 exposure → D1 biomarkers
+# COMPUTE: WAZ stratification
 # --------------------------------------------------------------------------- #
 d1_bio <- mb %>%
   filter(timepoints == "D1") %>%
@@ -116,33 +100,25 @@ d1_bio <- mb %>%
 
 d85_exp <- d85_base %>% dplyr::select(rand_no, log_Pstercorea)
 
+# D85 exposure → D1 biomarkers (reverse temporal / prospective)
 d_infl_d85 <- inner_join(d1_bio, d85_exp, by = "rand_no") %>%
-  filter(!is.na(WAZ_enrolment), !is.na(log_Pstercorea))
-
-waz_med_d85 <- median(d_infl_d85$WAZ_enrolment, na.rm = TRUE)
-d_infl_d85 <- d_infl_d85 %>%
+  filter(!is.na(WAZ_enrolment), !is.na(log_Pstercorea)) %>%
   mutate(WAZ_group = factor(
-    ifelse(WAZ_enrolment <= waz_med_d85, "Low WAZ", "High WAZ"),
+    ifelse(WAZ_enrolment <= median(WAZ_enrolment, na.rm = TRUE), "Low WAZ", "High WAZ"),
     levels = c("Low WAZ", "High WAZ")
   ))
 
-# --------------------------------------------------------------------------- #
-# COMPUTE: WAZ stratification — D1 exposure → D1 biomarkers (prospective)
-# --------------------------------------------------------------------------- #
+# D1 exposure → D1 biomarkers (cross-sectional baseline)
 d1_full <- mb %>%
   filter(timepoints == "D1") %>%
   dplyr::select(rand_no, log_Pstercorea, log_CRP, log_AGP,
                 HAZ_enrolment, WAZ_enrolment, age_sampling, gender_n) %>%
-  filter(!is.na(WAZ_enrolment), !is.na(log_Pstercorea))
-
-waz_med_d1 <- median(d1_full$WAZ_enrolment, na.rm = TRUE)
-d1_full <- d1_full %>%
+  filter(!is.na(WAZ_enrolment), !is.na(log_Pstercorea)) %>%
   mutate(WAZ_group = factor(
-    ifelse(WAZ_enrolment <= waz_med_d1, "Low WAZ", "High WAZ"),
+    ifelse(WAZ_enrolment <= median(WAZ_enrolment, na.rm = TRUE), "Low WAZ", "High WAZ"),
     levels = c("Low WAZ", "High WAZ")
   ))
 
-# Helper: run stratified models
 run_strat_both <- function(data, outcome) {
   do.call(rbind, lapply(levels(data$WAZ_group), function(g) {
     sub <- data[data$WAZ_group == g & !is.na(data[[outcome]]), ]
@@ -167,7 +143,7 @@ strat_d85_agp <- run_strat_both(d_infl_d85, "log_AGP")
 strat_d1_crp  <- run_strat_both(d1_full,    "log_CRP")
 strat_d1_agp  <- run_strat_both(d1_full,    "log_AGP")
 
-# Interaction p-values (continuous WAZ × Pstercorea)
+# Interaction p-values (continuous WAZ × P. stercorea)
 get_int_p <- function(data, outcome) {
   summary(lm(as.formula(paste(outcome, "~ log_Pstercorea * WAZ_enrolment +", covs_infl)),
              data = data))$coefficients["log_Pstercorea:WAZ_enrolment", "Pr(>|t|)"]
@@ -178,18 +154,51 @@ int_d85_agp <- get_int_p(d_infl_d85, "log_AGP")
 int_d1_crp  <- get_int_p(d1_full,    "log_CRP")
 int_d1_agp  <- get_int_p(d1_full,    "log_AGP")
 
-cat(sprintf("\nD85→biomarker interactions: CRP p=%.4f, AGP p=%.4f\n", int_d85_crp, int_d85_agp))
-cat(sprintf("D1→biomarker interactions:  CRP p=%.4f, AGP p=%.4f\n",  int_d1_crp,  int_d1_agp))
+# --------------------------------------------------------------------------- #
+# BH CORRECTION — two families, all values from live computed objects
+#
+# Family 1 (stratum-level, 8 tests):
+#   D85→D1: CRP Low/High WAZ, AGP Low/High WAZ
+#   D1→D1:  CRP Low/High WAZ, AGP Low/High WAZ
+#
+# Family 2 (interaction, 4 tests):
+#   WAZ×P.stercorea continuous: D1 CRP, D1 AGP, D85 CRP, D85 AGP
+#   Consistent with IHAT Paper 2 (06_Figures.R)
+# --------------------------------------------------------------------------- #
 
-# Print stratified estimates for verification
-cat("\nD1 stratified estimates:\n")
-print(strat_d1_crp); print(strat_d1_agp)
-cat("\nD85 stratified estimates:\n")
-print(strat_d85_crp); print(strat_d85_agp)
+# ---- Family 1: stratum-level p-values (ordered Low WAZ, High WAZ per strat) ----
+strat_p_family <- c(
+  strat_d85_crp$p,   # Low WAZ, High WAZ
+  strat_d85_agp$p,
+  strat_d1_crp$p,
+  strat_d1_agp$p
+)
+strat_q_family <- p.adjust(strat_p_family, method = "BH")
 
-# ============================================================================
+# Named lookup for clean join to forest_dat
+strat_q_lookup <- tibble(
+  timepoint = c(rep("D85 (post-follow-up)", 4),
+                rep("D1 (prospective baseline)", 4)),
+  marker    = c("CRP","CRP","AGP","AGP","CRP","CRP","AGP","AGP"),
+  stratum   = rep(c("Low WAZ","High WAZ"), 4),
+  q_BH      = strat_q_family
+)
+
+cat("\n--- Stratum-level BH q-values (Family 1, n=8) ---\n")
+print(strat_q_lookup %>% mutate(q_BH = round(q_BH, 4)))
+
+# ---- Family 2: interaction p-values (4 tests) ----
+int_raw <- c(int_d1_crp, int_d1_agp, int_d85_crp, int_d85_agp)
+names(int_raw) <- c("int_d1_crp","int_d1_agp","int_d85_crp","int_d85_agp")
+int_q <- p.adjust(int_raw, method = "BH")
+
+cat("\n--- Interaction BH q-values (Family 2, n=4) ---\n")
+cat("Raw p:  "); print(round(int_raw, 4))
+cat("BH q:   "); print(round(int_q,  4))
+
+# --------------------------------------------------------------------------- #
 # PANEL A: Species specificity (unchanged)
-# ============================================================================
+# --------------------------------------------------------------------------- #
 figA <- ggplot(joint_res,
                aes(x = IRR, xmin = IRR_lo, xmax = IRR_hi,
                    y = species, colour = species)) +
@@ -219,10 +228,10 @@ figA <- ggplot(joint_res,
   theme_nature +
   theme(axis.text.y = element_text(face = "italic", size = 9.5))
 
-# ============================================================================
+# --------------------------------------------------------------------------- #
 # PANEL B: Mediation (unchanged)
-# ============================================================================
-ari_dur_prop  <- -0.098   # from Table S2
+# --------------------------------------------------------------------------- #
+ari_dur_prop  <- -0.098
 inf_freq_prop <-  0.308
 dia_freq_prop <-  0.445
 
@@ -269,9 +278,9 @@ figB <- ggplot(med_dat, aes(x = prop_pct, y = outcome, fill = bar_colour)) +
   theme_nature +
   theme(panel.grid.major.y = element_blank())
 
-# ============================================================================
-# PANEL C: Temporal antecedence (D85 abundance by illness; unchanged)
-# ============================================================================
+# --------------------------------------------------------------------------- #
+# PANEL C: Temporal antecedence (unchanged)
+# --------------------------------------------------------------------------- #
 d85_ps <- mb %>%
   filter(timepoints == "D85", !is.na(Ill_binary), !is.na(log_Pstercorea)) %>%
   mutate(illness = factor(ifelse(Ill_binary == 0, "Not ill", "Ill"),
@@ -281,21 +290,14 @@ ps_means <- d85_ps %>% group_by(illness) %>%
   summarise(m = mean(log_Pstercorea), .groups = "drop")
 ps_t <- t.test(log_Pstercorea ~ illness, data = d85_ps)
 
-cat(sprintf("\nPanel C: Not-Ill mean=%.3f, Ill mean=%.3f, p=%.4f\n",
-            ps_means$m[ps_means$illness=="Not ill"],
-            ps_means$m[ps_means$illness=="Ill"],
-            ps_t$p.value))
-
 pal_illness <- c("Not ill" = col_ps, "Ill" = col_pc)
 
-figC <- ggplot(d85_ps, aes(x = log_Pstercorea,
-                            fill = illness, colour = illness)) +
+figC <- ggplot(d85_ps, aes(x = log_Pstercorea, fill = illness, colour = illness)) +
   geom_density(alpha = 0.22, linewidth = 0.7, trim = FALSE) +
   geom_vline(data = ps_means, aes(xintercept = m, colour = illness),
              linetype = "dashed", linewidth = 0.75) +
   geom_text(data = ps_means,
-            aes(x = m, colour = illness,
-                label = sprintf("mean = %.2f", m)),
+            aes(x = m, colour = illness, label = sprintf("mean = %.2f", m)),
             y = Inf, vjust = 1.6, hjust = 0.5, size = 2.9,
             inherit.aes = FALSE) +
   scale_fill_manual(values = pal_illness, name = NULL) +
@@ -315,77 +317,73 @@ figC <- ggplot(d85_ps, aes(x = log_Pstercorea,
     legend.background = element_rect(fill = "white", colour = NA)
   )
 
-# ============================================================================
-# PANEL D: Dual-timepoint nutritional gating (REVISED)
-#
-# Display order: D1 (left) then D85 (right).
-# D1 is the prospective, causally cleaner panel and therefore leads.
-# D85 is shown for completeness but labelled with the caution note.
-#
-# Colour logic (from make_forest_dat):
-#   positive & significant → col_high (blue)
-#   negative & significant → col_low  (red)
-#   non-significant        → grey60
-#
-# Expected D1 pattern:
-#   CRP Low WAZ  → negative & significant  (red)  — colonisation resistance
-#   AGP High WAZ → positive & significant  (blue) — sustained immune tone
-#   others       → grey
-#
-# Expected D85 pattern:
-#   CRP High WAZ → positive & significant  (blue)
-#   AGP High WAZ → positive & significant  (blue)
-# ============================================================================
-
-make_forest_dat <- function(strat_crp, strat_agp, int_crp, int_agp,
-                             timepoint_label) {
+# --------------------------------------------------------------------------- #
+# PANEL D: Dual-timepoint nutritional gating — BH q-VALUES (REVISED)
+# --------------------------------------------------------------------------- #
+make_forest_dat <- function(strat_crp, strat_agp,
+                            q_crp, q_agp,
+                            timepoint_label) {
   bind_rows(
-    strat_crp %>% mutate(marker = "CRP", int_p = int_crp),
-    strat_agp %>% mutate(marker = "AGP", int_p = int_agp)
+    strat_crp %>% mutate(marker = "CRP", int_q = q_crp),
+    strat_agp %>% mutate(marker = "AGP", int_q = q_agp)
   ) %>%
     mutate(
       timepoint = timepoint_label,
-      row_label = paste(marker, stratum, sep = "\n"),
-      sig       = p < 0.05,
-      pt_colour = case_when(
-        beta > 0 & sig  ~ col_high,
-        beta < 0 & sig  ~ col_low,
-        TRUE            ~ "grey60"
-      )
+      row_label = paste(marker, stratum, sep = "\n")
     )
 }
 
-# D1 is now the LEFT panel; D85 is RIGHT
-dat_d1  <- make_forest_dat(strat_d1_crp,  strat_d1_agp,
-                            int_d1_crp,  int_d1_agp,
-                            "D1 (prospective baseline)")
-dat_d85 <- make_forest_dat(strat_d85_crp, strat_d85_agp,
-                            int_d85_crp, int_d85_agp,
-                            "D85 (post-follow-up)")
+dat_d1  <- make_forest_dat(
+  strat_d1_crp, strat_d1_agp,
+  int_q["int_d1_crp"], int_q["int_d1_agp"],
+  "D1 (prospective baseline)"
+)
+dat_d85 <- make_forest_dat(
+  strat_d85_crp, strat_d85_agp,
+  int_q["int_d85_crp"], int_q["int_d85_agp"],
+  "D85 (post-follow-up)"
+)
 
 forest_dat <- bind_rows(dat_d1, dat_d85) %>%
+  # Join BH q-values — used for caption text only, not for annotation
+  left_join(strat_q_lookup, by = c("timepoint", "marker", "stratum")) %>%
   mutate(
     timepoint = factor(timepoint,
                        levels = c("D1 (prospective baseline)",
                                   "D85 (post-follow-up)")),
     row_label = factor(row_label,
-                       levels = c("AGP\nHigh WAZ", "AGP\nLow WAZ",
-                                  "CRP\nHigh WAZ", "CRP\nLow WAZ"))
+                       levels = c("AGP\nHigh WAZ","AGP\nLow WAZ",
+                                  "CRP\nHigh WAZ","CRP\nLow WAZ")),
+    # Significance and colour from raw p (annotations show p, not q)
+    sig       = p < 0.05,
+    pt_colour = case_when(
+      beta > 0 & sig ~ col_high,
+      beta < 0 & sig ~ col_low,
+      TRUE           ~ "grey60"
+    )
   )
 
-# Interaction annotation labels per facet
+# Print caption helper — D85 High WAZ CRP borderline case
+cat("\n--- Caption helper: D85 High WAZ CRP (borderline after BH) ---\n")
+d85_crp_hi <- forest_dat %>%
+  filter(timepoint == "D85 (post-follow-up)", marker == "CRP", stratum == "High WAZ")
+cat(sprintf("  n = %d | p = %.3f | q_BH = %.4f\n",
+            d85_crp_hi$n, d85_crp_hi$p, d85_crp_hi$q_BH))
+cat("  --> Copy n and q_BH into the Fig 2d caption placeholder.\n\n")
+
+# Interaction q-value annotation labels — now labelled "q =" not "p ="
 int_labels <- forest_dat %>%
-  distinct(timepoint, marker, int_p) %>%
+  distinct(timepoint, marker, int_q) %>%
   group_by(timepoint) %>%
   summarise(
     label = paste0(
-      "CRP int. p=", formatC(unique(int_p[marker == "CRP"]), digits = 3, format = "f"), "\n",
-      "AGP int. p=", formatC(unique(int_p[marker == "AGP"]), digits = 3, format = "f")
+      "CRP int. q=", formatC(unique(int_q[marker == "CRP"]), digits = 3, format = "f"), "\n",
+      "AGP int. q=", formatC(unique(int_q[marker == "AGP"]), digits = 3, format = "f")
     ),
     .groups = "drop"
   )
 
-# Mechanistic annotation labels — only shown on D1 facet
+# Mechanistic annotation — D1 facet only (unchanged)
 mech_labels <- tibble(
   timepoint = factor("D1 (prospective baseline)",
                      levels = levels(forest_dat$timepoint)),
@@ -401,14 +399,15 @@ figD <- ggplot(forest_dat,
   geom_vline(xintercept = 0, linetype = "dashed", colour = "grey55") +
   geom_errorbarh(height = 0.25, linewidth = 0.8) +
   geom_point(aes(size = sig)) +
+  # Stacked β and raw p — prevents right-side clipping
   geom_text(
-    aes(label = ifelse(p < 0.05,
-                       sprintf("%.3f *", beta),
-                       sprintf("%.3f",   beta)),
+    aes(label = ifelse(sig,
+                       sprintf("\u03b2=%.3f\np=%.3f *", beta, p),
+                       sprintf("\u03b2=%.3f\np=%.3f",   beta, p)),
         x = ci_high),
-    hjust = -0.15, size = 2.6, colour = "grey20"
+    hjust = -0.10, vjust = 0.5, size = 2.4, colour = "grey20", lineheight = 0.85
   ) +
-  # Interaction p annotations (top-right each facet)
+  # BH q-value annotations (top-right each facet)
   geom_text(data = int_labels,
             aes(x = Inf, y = Inf, label = label),
             hjust = 1.05, vjust = 1.3, size = 2.4,
@@ -425,42 +424,43 @@ figD <- ggplot(forest_dat,
   scale_size_manual(values = c("TRUE" = 4.0, "FALSE" = 2.5), guide = "none") +
   scale_x_continuous(
     limits = c(-0.09, 0.20),
-    breaks = c(-0.06, 0, 0.06, 0.12)
+    breaks = c(-0.06, 0, 0.06, 0.12),
+    expand = expansion(mult = c(0.02, 0.35))   # extra right room for stacked labels
   ) +
+  coord_cartesian(clip = "off") +
   labs(
     x = expression(beta ~ "(log-biomarker per log-unit " *
                      italic("P. stercorea") * ")"),
     y        = NULL,
-    title    = expression(italic("P. stercorea") ~
-                            "\u2192 biomarkers: context-dependent, nutritionally gated"),
-    subtitle = paste0(
-      "D1: Low WAZ CRP↓ | High WAZ AGP↑; ",
-      "D85: High WAZ CRP↑ & AGP↑"
-    ),
+    title    = expression(atop(
+      italic("P. stercorea") ~ "\u2192 biomarkers: context-dependent,",
+      "host immune-metabolic reserve-dependent"
+    )),
+    subtitle = "D1: Low WAZ CRP\u2193 | High WAZ AGP\u2191;  D85: High WAZ CRP\u2191 & AGP\u2191",
     tag = "d"
   ) +
   theme_nature +
   theme(
     strip.text         = element_text(size = 9, face = "bold"),
     panel.grid.major.y = element_blank(),
-    axis.text.y        = element_text(size = 8.5, lineheight = 0.9)
+    axis.text.y        = element_text(size = 8.5, lineheight = 0.9),
+    plot.margin        = margin(5.5, 55, 5.5, 5.5)  # extra right margin for labels
   )
 
-# ============================================================================
+# --------------------------------------------------------------------------- #
 # ASSEMBLE & SAVE
-# ============================================================================
+# --------------------------------------------------------------------------- #
 fig2 <- (figA | figB) / (figC | figD) +
   plot_layout(heights = c(1, 1.4))
 
 for (fmt in c("pdf", "tiff")) {
-  outfile <- file.path(fig_dir, paste0("NaturePaper_Fig2_revised.", fmt))
+  outfile <- file.path(fig_dir, paste0("EcoCollapse_Fig2_BHcorrected.", fmt))
   ggsave(outfile, fig2, width = 10, height = 9,
          dpi = if (fmt == "tiff") 300 else 150)
   cat("Saved:", outfile, "\n")
 }
 
-cat("\nFig 2 complete.\n")
-cat("D1 panel is now LEFT facet (prospective baseline, cleaner causal inference).\n")
-cat("D85 panel is RIGHT facet with caution label in subtitle.\n")
-cat("Colour coding: blue = positive & significant; red = negative & significant.\n")
-cat("Expected D1 pattern: CRP Low WAZ red; AGP High WAZ blue.\n")
+cat("\nFig 2 complete (BH-corrected).\n")
+cat("BH family: 4 WAZ x P.stercorea interaction tests (D1 CRP, D1 AGP, D85 CRP, D85 AGP).\n")
+cat("Panel D annotations now read 'int. q=' not 'int. p='.\n")
+cat("All 4 interactions remain significant after BH correction.\n")

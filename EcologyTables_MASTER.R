@@ -62,7 +62,7 @@ run_strat <- function(data, outcome) {
 
 run_int <- function(data, outcome) {
   fit <- lm(as.formula(paste(outcome,
-             "~ log_Pstercorea * WAZ_enrolment +", covs_infl)), data = data)
+                             "~ log_Pstercorea * WAZ_enrolment +", covs_infl)), data = data)
   cf  <- summary(fit)$coefficients
   data.frame(
     outcome          = outcome,
@@ -345,6 +345,59 @@ n_hi_d1        <- T12$n[T12$WAZ_stratum == "High WAZ"]
 cat("\n=== ALL TABLES COMPUTED ===\n")
 
 # =============================================================================
+# BH CORRECTION — two families, all values from live computed objects
+#
+# Family 1 (stratum-level, 8 tests): T7, T8, T11, T12
+#   Each data frame has 2 rows (Low WAZ, High WAZ); p-values stacked in order
+#   D85→D1: CRP Low/High WAZ, AGP Low/High WAZ
+#   D1→D1:  CRP Low/High WAZ, AGP Low/High WAZ
+#
+# Family 2 (interaction, 4 tests): T9, T13
+#   WAZ×P.stercorea continuous: D85 CRP, D85 AGP, D1 CRP, D1 AGP
+# =============================================================================
+
+# ---- Family 1 ----
+strat_p_family <- c(T7$p, T8$p, T11$p, T12$p)   # 8 values, ordered as above
+strat_q_family <- p.adjust(strat_p_family, method = "BH")
+
+T7  <- T7  %>% mutate(q_BH = round(strat_q_family[1:nrow(T7)],   4))
+T8  <- T8  %>% mutate(q_BH = round(strat_q_family[(nrow(T7)+1):(nrow(T7)+nrow(T8))], 4))
+T11 <- T11 %>% mutate(q_BH = round(strat_q_family[(nrow(T7)+nrow(T8)+1):(nrow(T7)+nrow(T8)+nrow(T11))], 4))
+T12 <- T12 %>% mutate(q_BH = round(strat_q_family[(nrow(T7)+nrow(T8)+nrow(T11)+1):length(strat_q_family)], 4))
+
+cat("\n--- Stratum-level BH q-values (Family 1, n=8) ---\n")
+cat("D85 CRP:\n"); print(T7[, c("WAZ_stratum","p","q_BH")])
+cat("D85 AGP:\n"); print(T8[, c("WAZ_stratum","p","q_BH")])
+cat("D1  CRP:\n"); print(T11[, c("WAZ_stratum","p","q_BH")])
+cat("D1  AGP:\n"); print(T12[, c("WAZ_stratum","p","q_BH")])
+
+# ---- Family 2 ----
+int_p_family <- c(T9$interaction_p, T13$interaction_p)  # 4 values: D85 CRP, D85 AGP, D1 CRP, D1 AGP
+int_q_family <- p.adjust(int_p_family, method = "BH")
+
+T9  <- T9  %>% mutate(interaction_q_BH = round(int_q_family[1:nrow(T9)],  4))
+T13 <- T13 %>% mutate(interaction_q_BH = round(int_q_family[(nrow(T9)+1):length(int_q_family)], 4))
+
+cat("\n--- Interaction BH q-values (Family 2, n=4) ---\n")
+cat("D85:\n"); print(T9[,  c("outcome","interaction_p","interaction_q_BH")])
+cat("D1:\n");  print(T13[, c("outcome","interaction_p","interaction_q_BH")])
+
+# ---- Extract scalars for footnotes (all from live objects) ----
+crp_hi_q_d85  <- T7$q_BH[T7$WAZ_stratum  == "High WAZ"]
+crp_lo_q_d85  <- T7$q_BH[T7$WAZ_stratum  == "Low WAZ"]
+agp_hi_q_d85  <- T8$q_BH[T8$WAZ_stratum  == "High WAZ"]
+agp_lo_q_d85  <- T8$q_BH[T8$WAZ_stratum  == "Low WAZ"]
+int_crp_q_d85 <- T9$interaction_q_BH[T9$outcome  == "log_CRP"]
+int_agp_q_d85 <- T9$interaction_q_BH[T9$outcome  == "log_AGP"]
+
+crp_lo_q_d1   <- T11$q_BH[T11$WAZ_stratum == "Low WAZ"]
+crp_hi_q_d1   <- T11$q_BH[T11$WAZ_stratum == "High WAZ"]
+agp_hi_q_d1   <- T12$q_BH[T12$WAZ_stratum == "High WAZ"]
+agp_lo_q_d1   <- T12$q_BH[T12$WAZ_stratum == "Low WAZ"]
+int_crp_q_d1  <- T13$interaction_q_BH[T13$outcome == "log_CRP"]
+int_agp_q_d1  <- T13$interaction_q_BH[T13$outcome == "log_AGP"]
+
+# =============================================================================
 # OUTPUT 1: VERIFICATION MASTER (internal — one sheet per table)
 # =============================================================================
 wb_master <- createWorkbook()
@@ -380,35 +433,35 @@ NAVY  <- "#2F4F7F"
 LIGHT <- "#EBF0F7"
 
 sty_title <- createStyle(fontName = "Calibri", fontSize = 10,
-                          textDecoration = "bold")
+                         textDecoration = "bold")
 sty_hdr   <- createStyle(fontName = "Calibri", fontSize = 9,
-                          fontColour = "#FFFFFF", fgFill = NAVY,
-                          halign = "center", textDecoration = "bold",
-                          border = "TopBottom", borderColour = NAVY,
-                          wrapText = TRUE)
+                         fontColour = "#FFFFFF", fgFill = NAVY,
+                         halign = "center", textDecoration = "bold",
+                         border = "TopBottom", borderColour = NAVY,
+                         wrapText = TRUE)
 sty_odd   <- createStyle(fontName = "Calibri", fontSize = 9,
-                          fgFill = LIGHT,
-                          border = "TopBottom", borderColour = "#CCCCCC")
+                         fgFill = LIGHT,
+                         border = "TopBottom", borderColour = "#CCCCCC")
 sty_even  <- createStyle(fontName = "Calibri", fontSize = 9,
-                          border = "TopBottom", borderColour = "#CCCCCC")
+                         border = "TopBottom", borderColour = "#CCCCCC")
 sty_note  <- createStyle(fontName = "Calibri", fontSize = 8,
-                          fontColour = "#555555",
-                          textDecoration = "italic", wrapText = TRUE)
+                         fontColour = "#555555",
+                         textDecoration = "italic", wrapText = TRUE)
 
 write_clean_sheet <- function(wb, sheet_name, df, title, note = NULL) {
   addWorksheet(wb, sheet_name)
   nc <- ncol(df)
-
+  
   writeData(wb, sheet_name, title, startRow = 1, startCol = 1)
   addStyle(wb, sheet_name, sty_title, rows = 1, cols = 1)
   if (nc > 1) mergeCells(wb, sheet_name, rows = 1, cols = 1:nc)
-
+  
   for (j in seq_len(nc)) {
     writeData(wb, sheet_name, names(df)[j], startRow = 2, startCol = j)
     addStyle(wb, sheet_name, sty_hdr, rows = 2, cols = j)
   }
   setRowHeights(wb, sheet_name, rows = 2, heights = 30)
-
+  
   for (i in seq_len(nrow(df))) {
     writeData(wb, sheet_name, df[i, , drop = FALSE],
               startRow = i + 2, startCol = 1, colNames = FALSE)
@@ -416,7 +469,7 @@ write_clean_sheet <- function(wb, sheet_name, df, title, note = NULL) {
              if (i %% 2 == 1) sty_odd else sty_even,
              rows = i + 2, cols = 1:nc, gridExpand = TRUE)
   }
-
+  
   if (!is.null(note)) {
     nr <- nrow(df) + 4
     writeData(wb, sheet_name, note, startRow = nr, startCol = 1)
@@ -424,7 +477,7 @@ write_clean_sheet <- function(wb, sheet_name, df, title, note = NULL) {
     if (nc > 1) mergeCells(wb, sheet_name, rows = nr, cols = 1:nc)
     setRowHeights(wb, sheet_name, rows = nr, heights = 70)
   }
-
+  
   setColWidths(wb, sheet_name, cols = 1:nc,
                widths = pmax(10, nchar(names(df)) + 3))
   freezePane(wb, sheet_name, firstActiveRow = 3, firstActiveCol = 2)
@@ -433,115 +486,134 @@ write_clean_sheet <- function(wb, sheet_name, df, title, note = NULL) {
 # Consolidated tables
 T7_T8 <- bind_rows(T7 %>% mutate(biomarker = "log_CRP"),
                    T8 %>% mutate(biomarker = "log_AGP")) %>%
-  dplyr::select(biomarker, everything())
+  dplyr::select(biomarker, WAZ_stratum, n, beta, se, ci_low, ci_high, p, q_BH)
 
 T11_T12 <- bind_rows(T11 %>% mutate(biomarker = "log_CRP"),
                      T12 %>% mutate(biomarker = "log_AGP")) %>%
-  dplyr::select(biomarker, everything())
+  dplyr::select(biomarker, WAZ_stratum, n, beta, se, ci_low, ci_high, p, q_BH)
 
 wb_gh <- createWorkbook()
 
 write_clean_sheet(wb_gh, "S1_Richness", T1,
-  sprintf("Supplementary Table 1. Genus-level richness at Day 85 by illness group (IHAT-GUT, n=%d)", n_d85),
-  note = sprintf(
-    paste0("Day 85 microbiome after filtering for non-missing illness status, richness, and Shannon diversity. ",
-           "n=%d: %d not-ill, %d ill. Welch two-sample t-test. Cohen's d = |Not-Ill minus Ill| / pooled SD. ",
-           "Not-Ill: %.1f +/- %.1f genera; Ill: %.1f +/- %.1f genera; t=%.2f, p=%s, d=%.2f."),
-    n_d85, n_not_ill, n_ill,
-    rich_mean_ni, rich_sd_ni, rich_mean_ill, rich_sd_ill,
-    rich_t_val, fmt_p(rich_p), rich_d_val
-  )
+                  sprintf("Supplementary Table 1. Genus-level richness at Day 85 by illness group (IHAT-GUT, n=%d)", n_d85),
+                  note = sprintf(
+                    paste0("Day 85 microbiome after filtering for non-missing illness status, richness, and Shannon diversity. ",
+                           "n=%d: %d not-ill, %d ill. Welch two-sample t-test. Cohen's d = |Not-Ill minus Ill| / pooled SD. ",
+                           "Not-Ill: %.1f +/- %.1f genera; Ill: %.1f +/- %.1f genera; t=%.2f, p=%s, d=%.2f."),
+                    n_d85, n_not_ill, n_ill,
+                    rich_mean_ni, rich_sd_ni, rich_mean_ill, rich_sd_ill,
+                    rich_t_val, fmt_p(rich_p), rich_d_val
+                  )
 )
 
 write_clean_sheet(wb_gh, "S2_Shannon", T2,
-  sprintf("Supplementary Table 2. Shannon diversity at Day 85 by illness group (IHAT-GUT, n=%d)", n_d85),
-  note = sprintf(
-    paste0("Same sample as Table S1 (n=%d). Shannon index computed from species-level relative abundances. ",
-           "Ill children have %s Shannon (%.3f vs %.3f), direction reversed relative to richness. ",
-           "Non-significant (p=%s, d=%.3f), confirming dissociation between evenness and richness-based protection."),
-    n_d85, shan_dir, shan_mean_ill, shan_mean_ni, fmt_p(shan_p), shan_d_val
-  )
+                  sprintf("Supplementary Table 2. Shannon diversity at Day 85 by illness group (IHAT-GUT, n=%d)", n_d85),
+                  note = sprintf(
+                    paste0("Same sample as Table S1 (n=%d). Shannon index computed from species-level relative abundances. ",
+                           "Ill children have %s Shannon (%.3f vs %.3f), direction reversed relative to richness. ",
+                           "Non-significant (p=%s, d=%.3f), confirming dissociation between evenness and richness-based protection."),
+                    n_d85, shan_dir, shan_mean_ill, shan_mean_ni, fmt_p(shan_p), shan_d_val
+                  )
 )
 
 write_clean_sheet(wb_gh, "S3_AUC", T3,
-  sprintf("Supplementary Table 3. ROC / AUC comparison: genus-level richness vs Shannon diversity (D85, n=%d)", n_d85),
-  note = sprintf(
-    paste0("AUC and 95%% CI from pROC package (DeLong method). ",
-           "AUC richness = %.3f (%.3f-%.3f); AUC Shannon = %.3f (%.3f-%.3f). ",
-           "DeLong test for difference: p=%s. ",
-           "Richness discriminates illness; Shannon performs at chance."),
-    auc_rich, auc_rich_lo, auc_rich_hi,
-    auc_shan, auc_shan_lo, auc_shan_hi,
-    fmt_p(delong_p)
-  )
+                  sprintf("Supplementary Table 3. ROC / AUC comparison: genus-level richness vs Shannon diversity (D85, n=%d)", n_d85),
+                  note = sprintf(
+                    paste0("AUC and 95%% CI from pROC package (DeLong method). ",
+                           "AUC richness = %.3f (%.3f-%.3f); AUC Shannon = %.3f (%.3f-%.3f). ",
+                           "DeLong test for difference: p=%s. ",
+                           "Richness discriminates illness; Shannon performs at chance."),
+                    auc_rich, auc_rich_lo, auc_rich_hi,
+                    auc_shan, auc_shan_lo, auc_shan_hi,
+                    fmt_p(delong_p)
+                  )
 )
 
 write_clean_sheet(wb_gh, "S4_NB_Models", T4,
-  sprintf("Supplementary Table 4. Negative binomial GLM: P. stercorea -> ARI frequency (D85, n=%d)", n_total_nb),
-  note = sprintf(
-    paste0("d85_base joined to ae_ari; ae_freq capped at <=5. n=%d after covariate complete-case filtering. ",
-           "Total model: IRR=%.3f (%.3f-%.3f), p=%s. ",
-           "Direct model (richness-adjusted): IRR=%.3f (%.3f-%.3f), p=%s. ",
-           "Covariates: age, sex, HAZ. IRR = exp(beta). CIs from profile likelihood."),
-    n_total_nb,
-    irr_total, irr_total_lo, irr_total_hi, fmt_p(p_total_nb),
-    irr_direct, irr_direct_lo, irr_direct_hi, fmt_p(p_direct_nb)
-  )
+                  sprintf("Supplementary Table 4. Negative binomial GLM: P. stercorea -> ARI frequency (D85, n=%d)", n_total_nb),
+                  note = sprintf(
+                    paste0("d85_base joined to ae_ari; ae_freq capped at <=5. n=%d after covariate complete-case filtering. ",
+                           "Total model: IRR=%.3f (%.3f-%.3f), p=%s. ",
+                           "Direct model (richness-adjusted): IRR=%.3f (%.3f-%.3f), p=%s. ",
+                           "Covariates: age, sex, HAZ. IRR = exp(beta). CIs from profile likelihood."),
+                    n_total_nb,
+                    irr_total, irr_total_lo, irr_total_hi, fmt_p(p_total_nb),
+                    irr_direct, irr_direct_lo, irr_direct_hi, fmt_p(p_direct_nb)
+                  )
 )
 
 write_clean_sheet(wb_gh, "S5_Joint_Model", T5,
-  sprintf("Supplementary Table 5. Joint NB model: P. stercorea + P. copri -> ARI (D85, n=%d)", n_joint),
-  note = sprintf(
-    paste0("Both species entered simultaneously. P. copri serves as within-model negative control. ",
-           "Pearson r(log_Pstercorea, log_Pcopri) = %.2f. ",
-           "P. stercorea: IRR=%.3f (%.3f-%.3f), p=%s. ",
-           "P. copri: IRR=%.3f (%.3f-%.3f), p=%s. Species-specificity confirmed."),
-    r_species,
-    irr_ps_joint, irr_ps_joint_lo, irr_ps_joint_hi, fmt_p(p_ps_joint),
-    irr_pc_joint, irr_pc_joint_lo, irr_pc_joint_hi, fmt_p(p_pc_joint)
-  )
+                  sprintf("Supplementary Table 5. Joint NB model: P. stercorea + P. copri -> ARI (D85, n=%d)", n_joint),
+                  note = sprintf(
+                    paste0("Both species entered simultaneously. P. copri serves as within-model negative control. ",
+                           "Pearson r(log_Pstercorea, log_Pcopri) = %.2f. ",
+                           "P. stercorea: IRR=%.3f (%.3f-%.3f), p=%s. ",
+                           "P. copri: IRR=%.3f (%.3f-%.3f), p=%s. Species-specificity confirmed."),
+                    r_species,
+                    irr_ps_joint, irr_ps_joint_lo, irr_ps_joint_hi, fmt_p(p_ps_joint),
+                    irr_pc_joint, irr_pc_joint_lo, irr_pc_joint_hi, fmt_p(p_pc_joint)
+                  )
 )
 
 write_clean_sheet(wb_gh, "S6_Mediation", T6,
-  sprintf("Supplementary Table 6. Baron-Kenny mediation: richness as mediator of P. stercorea -> ARI (n=%d)", n_med),
-  note = sprintf(
-    paste0("Path A: log_Pstercorea -> richness (OLS). ",
-           "Path B: richness -> ae_freq | log_Pstercorea (OLS). ",
-           "NIE = Path A x Path B. Sobel test for NIE significance. ",
-           "Proportion mediated = %.1f%%. ",
-           "Near-zero value confirms P. stercorea ARI protection is richness-independent (species-autonomous pathway)."),
-    pct_med_val
-  )
+                  sprintf("Supplementary Table 6. Baron-Kenny mediation: richness as mediator of P. stercorea -> ARI (n=%d)", n_med),
+                  note = sprintf(
+                    paste0("Path A: log_Pstercorea -> richness (OLS). ",
+                           "Path B: richness -> ae_freq | log_Pstercorea (OLS). ",
+                           "NIE = Path A x Path B. Sobel test for NIE significance. ",
+                           "Proportion mediated = %.1f%%. ",
+                           "Near-zero value confirms P. stercorea ARI protection is richness-independent (species-autonomous pathway)."),
+                    pct_med_val
+                  )
 )
 
 write_clean_sheet(wb_gh, "S7_D85toD1_Biomarkers", T7_T8,
-  "Supplementary Table 7. Day 85 P. stercorea (exposure) -> Day 1 CRP and AGP (outcome), WAZ-stratified",
-  note = sprintf(
-    paste0("Regression direction: Day 85 log_Pstercorea as predictor; Day 1 log_CRP or log_AGP as outcome. ",
-           "Read prospectively: Day 1 inflammatory tone predicts subsequent Day 85 P. stercorea colonisation. ",
-           "WAZ median split = %.3f. Covariates: HAZ, age_sampling, sex. ",
-           "High WAZ (n=%d): CRP beta=%.3f, p=%s; AGP beta=%.3f, p=%s. No signal in Low WAZ (n=%d). ",
-           "Interaction p-values (continuous WAZ x log_Pstercorea): CRP p=%s, AGP p=%s."),
-    waz_med_d85d1,
-    n_hi_d85, crp_hi_beta_d85, fmt_p(crp_hi_p_d85),
-    agp_hi_beta_d85, fmt_p(agp_hi_p_d85), n_lo_d85,
-    fmt_p(int_crp_p_d85), fmt_p(int_agp_p_d85)
-  )
+                  "Supplementary Table 7. Day 85 P. stercorea (exposure) -> Day 1 CRP and AGP (outcome), WAZ-stratified",
+                  note = sprintf(
+                    paste0(
+                      "Regression direction: Day 85 log_Pstercorea as predictor; Day 1 log_CRP or log_AGP as outcome. ",
+                      "Read prospectively: Day 1 inflammatory tone predicts subsequent Day 85 P. stercorea colonisation. ",
+                      "WAZ median split = %.3f. Covariates: HAZ, age_sampling, sex. ",
+                      "q_BH: Benjamini-Hochberg correction across 8 stratum-level tests (Family 1: T7, T8, T11, T12). ",
+                      "High WAZ (n=%d): CRP beta=%.3f, p=%s, q=%s; AGP beta=%.3f, p=%s, q=%s. ",
+                      "Low WAZ (n=%d): no associations (CRP p=%s, q=%s; AGP p=%s, q=%s). ",
+                      "Interaction q-values (Family 2, 4 tests): CRP int. p=%s, q=%s; AGP int. p=%s, q=%s."
+                    ),
+                    waz_med_d85d1,
+                    n_hi_d85,
+                    crp_hi_beta_d85, fmt_p(crp_hi_p_d85), fmt_p(crp_hi_q_d85),
+                    agp_hi_beta_d85, fmt_p(agp_hi_p_d85), fmt_p(agp_hi_q_d85),
+                    n_lo_d85,
+                    fmt_p(T7$p[T7$WAZ_stratum == "Low WAZ"]), fmt_p(crp_lo_q_d85),
+                    fmt_p(T8$p[T8$WAZ_stratum == "Low WAZ"]), fmt_p(agp_lo_q_d85),
+                    fmt_p(int_crp_p_d85), fmt_p(int_crp_q_d85),
+                    fmt_p(int_agp_p_d85), fmt_p(int_agp_q_d85)
+                  )
 )
 
 write_clean_sheet(wb_gh, "S8_D1_CrossSectional", T11_T12,
-  "Supplementary Table 8. Day 1 P. stercorea -> Day 1 CRP and AGP (cross-sectional baseline), WAZ-stratified",
-  note = sprintf(
-    paste0("Both exposure (log_Pstercorea) and outcomes (log_CRP, log_AGP) measured at Day 1 (enrolment). ",
-           "Cross-sectional; no temporal inference. WAZ median split = %.3f. ",
-           "Low WAZ (n=%d): CRP beta=%.3f, p=%s. ",
-           "High WAZ (n=%d): AGP beta=%.3f, p=%s. ",
-           "Interaction p-values (continuous WAZ x log_Pstercorea): CRP p=%s, AGP p=%s."),
-    waz_med_d1,
-    n_lo_d1, crp_lo_beta_d1, fmt_p(crp_lo_p_d1),
-    n_hi_d1, agp_hi_beta_d1, fmt_p(agp_hi_p_d1),
-    fmt_p(int_crp_p_d1), fmt_p(int_agp_p_d1)
-  )
+                  "Supplementary Table 8. Day 1 P. stercorea -> Day 1 CRP and AGP (cross-sectional baseline), WAZ-stratified",
+                  note = sprintf(
+                    paste0(
+                      "Both exposure (log_Pstercorea) and outcomes (log_CRP, log_AGP) measured at Day 1 (enrolment). ",
+                      "Cross-sectional; no temporal inference. WAZ median split = %.3f. ",
+                      "q_BH: Benjamini-Hochberg correction across 8 stratum-level tests (Family 1: T7, T8, T11, T12). ",
+                      "Low WAZ (n=%d): CRP beta=%.3f, p=%s, q=%s (CRP suppression: colonisation resistance). ",
+                      "High WAZ (n=%d): AGP beta=%.3f, p=%s, q=%s (immune engagement: tonic priming). ",
+                      "Low WAZ AGP: p=%s, q=%s (null). High WAZ CRP: p=%s, q=%s (null). ",
+                      "Interaction q-values (Family 2, 4 tests): CRP int. p=%s, q=%s; AGP int. p=%s, q=%s. ",
+                      "Directional asymmetry by WAZ stratum supports host immune-metabolic reserve-dependent immune conditioning."
+                    ),
+                    waz_med_d1,
+                    n_lo_d1,
+                    crp_lo_beta_d1, fmt_p(crp_lo_p_d1), fmt_p(crp_lo_q_d1),
+                    n_hi_d1,
+                    agp_hi_beta_d1, fmt_p(agp_hi_p_d1), fmt_p(agp_hi_q_d1),
+                    fmt_p(T12$p[T12$WAZ_stratum == "Low WAZ"]), fmt_p(agp_lo_q_d1),
+                    fmt_p(T11$p[T11$WAZ_stratum == "High WAZ"]), fmt_p(crp_hi_q_d1),
+                    fmt_p(int_crp_p_d1), fmt_p(int_crp_q_d1),
+                    fmt_p(int_agp_p_d1), fmt_p(int_agp_q_d1)
+                  )
 )
 
 github_file <- file.path(output_dir, "EcologyPaper_SupplementaryTables_GitHub.xlsx")
