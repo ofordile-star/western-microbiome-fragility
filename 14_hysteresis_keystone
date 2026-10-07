@@ -1,0 +1,75 @@
+# 14_hysteresis_keystone.py -- hysteresis (burden/recency vs distance from never-ill centroid), PERMANOVA with/without richness residualisation, P. stercorea keystone and knock-out analysis.
+import os,sys; sys.path.insert(0,os.path.dirname(os.path.abspath(__file__))); import config
+exec(config.read('common.py'))
+from netlib import *
+import json, diptest, statsmodels.formula.api as smf
+from scipy import stats
+from sklearn.decomposition import PCA
+from sklearn.mixture import GaussianMixture
+from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_score
+rng=np.random.default_rng(11)
+A,pcm,spk2,modid,alpha=pd.read_pickle('net.pkl'); R={}
+d=d.reset_index(drop=True)
+
+from patsy.builtins import C as Cat
+pcol=spk.index('Prevotella_copri_35.15'); psi=spk.index('Prevotella_stercorea_7.05')
+# ===== 4. hysteresis / memory
+cen=C[d.grp=='never'].mean(0); d['dist_never']=np.linalg.norm(C-cen,axis=1)
+d['cen_dist_loo']=d.dist_never
+X0=d[['age_enrolment','gender_n','HAZ_enrolment','iron_arm','season','location']].copy(); 
+dd=d.copy(); dd['haz']=dd.HAZ_enrolment.fillna(dd.HAZ_enrolment.median()); dd['z_dist']=(dd.dist_never-dd.dist_never.mean())/dd.dist_never.std()
+dd['since_c']=dd.since.fillna(dd.since.max()); dd['z_rich']=(dd.q0-dd.q0.mean())/dd.q0.std(); dd['dz']=(dd.depth-dd.depth.mean())/dd.depth.std()
+ill=dd[dd.pre_n>0].copy(); ill['burden']=ill.pre_n.clip(upper=4)
+f0='z_dist ~ burden + since_c + age_enrolment + gender_n + haz + Cat(iron_arm) + Cat(season) + Cat(location) + dz'
+h1=smf.ols(f0,ill).fit(); h2=smf.ols(f0+' + z_rich',ill).fit()
+H=pd.DataFrame({'term':['burden (per episode)','days since last episode (per day)'],
+ 'coef_unadj_richness':[h1.params['burden'],h1.params['since_c']],'p_unadj_richness':[h1.pvalues['burden'],h1.pvalues['since_c']],
+ 'coef_adj_richness':[h2.params['burden'],h2.params['since_c']],'p_adj_richness':[h2.pvalues['burden'],h2.pvalues['since_c']]})
+H.to_csv('out/hysteresis.csv',index=False); print(H.round(4).to_string())
+# distance by recency class, never vs ill with PERMANOVA-like test (Euclidean on CLR = Aitchison)
+def pseudoF(M,g):
+    ug=np.unique(g); gm=M.mean(0); ssb=sum((g==u).sum()*((M[g==u].mean(0)-gm)**2).sum() for u in ug); ssw=sum(((M[g==u]-M[g==u].mean(0))**2).sum() for u in ug)
+    return (ssb/(len(ug)-1))/(ssw/(len(M)-len(ug)))
+g=(d.grp!='never').values.astype(int); F0=pseudoF(C,g)
+perm=[pseudoF(C,rng.permutation(g)) for _ in range(499)]; p_raw=(1+sum(x>=F0 for x in perm))/500
+# residualize on richness+covariates (not on group) then test
+Dm=np.c_[np.ones(len(d)),dd[['z_rich','dz','age_enrolment','gender_n','haz']].values.astype(float),pd.get_dummies(dd.location,drop_first=True).values.astype(float),(dd.season=='dry').values.astype(float),(dd.iron_arm=='treatment').values.astype(float)]
+res=C-Dm@np.linalg.lstsq(Dm,C,rcond=None)[0]; F1=pseudoF(res,g); perm1=[pseudoF(res,rng.permutation(g)) for _ in range(499)]; p_res=(1+sum(x>=F1 for x in perm1))/500
+R['permanova']=dict(F_raw=F0,p_raw=p_raw,F_resid=F1,p_resid=p_res); print(R['permanova'])
+# Prevotella stercorea decline with burden
+dd['lps']=np.log1p(dd['Prevotella_stercorea_7.05']); 
+m=smf.ols('lps ~ pre_n + z_rich + age_enrolment + gender_n + haz + Cat(iron_arm) + Cat(season) + Cat(location)',dd).fit(); R['lps_burden']=dict(coef=m.params['pre_n'],p=m.pvalues['pre_n'])
+m=smf.ols('lps ~ pre_n + age_enrolment + gender_n + haz + Cat(iron_arm) + Cat(season) + Cat(location)',dd).fit(); R['lps_burden_noRich']=dict(coef=m.params['pre_n'],p=m.pvalues['pre_n']); print(R['lps_burden'],R['lps_burden_noRich'])
+# ===== 5. keystone analysis
+G=nx.from_numpy_array(A); p=len(spk); degv=A.sum(1); bt=nx.betweenness_centrality(G); 
+def knock(i):
+    H0=G.copy(); H0.remove_node(i); l=max((len(c) for c in nx.connected_components(H0)),default=0); return len(max(nx.connected_components(G),key=len))-l, nx.number_connected_components(H0)
+nodes=pd.DataFrame({'species':spk,'degree':degv,'betweenness':[bt[i] for i in range(p)],'prevalence':keep.sum() and (X[:,keep]>0).mean(0),'mean_rel_ab':(X[:,keep]/X.sum(1,keepdims=True)).mean(0),'module':modid})
+nodes['lcc_loss_on_removal']=[knock(i)[0] for i in range(p)]
+nodes['deg_pct']=nodes.degree.rank(pct=True); nodes['btw_pct']=nodes.betweenness.rank(pct=True); nodes['knock_pct']=nodes.lcc_loss_on_removal.rank(pct=True)
+nodes['is_Ps']=nodes.species=='Prevotella_stercorea_7.05'; nodes.sort_values('degree',ascending=False).to_csv('out/node_table.csv',index=False)
+ps=nodes[nodes.is_Ps].iloc[0]; print(ps.to_dict())
+# abundance/prevalence-matched comparison
+m_=nodes[(~nodes.is_Ps)&(nodes.prevalence.between(ps.prevalence-0.1,ps.prevalence+0.1))]; print('matched nodes',len(m_),'median deg',m_.degree.median(),'Ps deg',ps.degree)
+nb=[(spk[j],pcm[psi,j]) for j in np.where(A[psi])[0]]; nb.sort(key=lambda t:-abs(t[1])); print('Ps neighbours',nb)
+# bootstrap stability
+bd=[];edge=np.zeros(p);rk=[]
+NBOOT=60
+for _ in range(NBOOT):
+    ix=rng.integers(0,len(C),len(C)); Ab,_=fit(C[ix],alpha); bd.append(Ab[psi].sum()); edge+=Ab[psi]; rk.append((Ab.sum(1)<Ab[psi].sum()).mean())
+R['Ps_boot']=dict(deg_mean=float(np.mean(bd)),deg_ci=[float(np.percentile(bd,2.5)),float(np.percentile(bd,97.5))],deg_pct_mean=float(np.mean(rk)),edge_freq={spk[j]:float(edge[j]/NBOOT) for j in np.argsort(-edge)[:6]})
+print(R['Ps_boot'])
+# empirical: neighborhood score of Ps (mean CLR of its network neighbours) vs infection, adjusting richness
+nbi=np.where(A[psi])[0]; dd['ps_clr']=C[:,psi]; dd['nb_clr']=C[:,nbi].mean(1) if len(nbi) else 0
+for v in ('ps_clr','nb_clr'): dd[v+'_z']=(dd[v]-dd[v].mean())/dd[v].std()
+rows=[]
+for out in ('ever_ill','post_any'):
+    ex=' + pre_n + recent14' if out=='post_any' else ''
+    for form in (f'{out} ~ ps_clr_z + z_rich + dz + age_enrolment + gender_n + haz + Cat(iron_arm) + Cat(season) + Cat(location){ex}',f'{out} ~ ps_clr_z + nb_clr_z + z_rich + dz + age_enrolment + gender_n + haz + Cat(iron_arm) + Cat(season) + Cat(location){ex}'):
+        m=smf.logit(form,dd).fit(disp=0)
+        for t in [x for x in ('ps_clr_z','nb_clr_z') if x in m.params.index]:
+            rows.append(dict(outcome=out,term=t,model='Ps + neighbours' if 'nb_clr_z' in form else 'Ps only',OR_per_SD=np.exp(m.params[t]),lo=np.exp(m.conf_int().loc[t,0]),hi=np.exp(m.conf_int().loc[t,1]),p=m.pvalues[t]))
+K=pd.DataFrame(rows); K.to_csv('out/keystone_models.csv',index=False); print(K.round(3).to_string())
+json.dump(R,open('out/results_hysteresis_keystone.json','w'),indent=1,default=float)
+
