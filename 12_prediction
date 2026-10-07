@@ -1,0 +1,97 @@
+# 12_prediction.py -- head-to-head cross-validated prediction: base vs richness vs Hill vs network vs CLR PCs, with null-network control and LR tests.
+import os,sys; sys.path.insert(0,os.path.dirname(os.path.abspath(__file__))); import config
+exec(config.read('common.py'))
+from netlib import *
+import json
+from sklearn.linear_model import LogisticRegression
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import make_pipeline
+from sklearn.model_selection import StratifiedKFold
+from sklearn.metrics import roc_auc_score
+from sklearn.decomposition import PCA
+import statsmodels.api as sm
+from statsmodels.stats.multitest import multipletests
+rng=np.random.default_rng(7)
+A,pcm,spk2,modid,alpha=pd.read_pickle('net.pkl'); assert spk2==spk
+nulls=[rewire(A,rng) for _ in range(20)]
+# ---------- datasets for D85 / D1 / D15 ----------
+def make_set(tp):
+    m=mb[(mb.timepoints==tp)&mb.Ill_binary.notna()].copy(); Xm=m[sp].values.astype(float)
+    cv=pd.DataFrame({'age':m.age_enrolment,'sex':m.gender_n,'iron':(m.iron_arm=='treatment').astype(int),'dry':(m.season=='dry').astype(int),'depth':np.log(Xm.sum(1))},index=m.index)
+    cv['haz']=m.HAZ_enrolment.fillna(m.HAZ_enrolment.median())
+    cv=pd.concat([cv,pd.get_dummies(m.location,prefix='loc',drop_first=True).astype(int)],axis=1)
+    Pr=Xm[:,keep]>0; Cm=np.log(Xm+0.5); Cm=(Cm-Cm.mean(1,keepdims=True))[:,keep]
+    p=Xm/Xm.sum(1,keepdims=True); H=-np.where(p>0,p*np.log(np.where(p>0,p,1)),0).sum(1)
+    div=pd.DataFrame({'q0':(Xm>0).sum(1),'q1':np.exp(H),'q2':1/(p**2).sum(1)},index=m.index)
+    NF=child_feats(A,modid,Pr,m.index)
+    return dict(m=m,cv=cv,div=div,NF=NF,Pr=Pr,C=Cm,y=m.Ill_binary.astype(int).values)
+S={tp:make_set(tp) for tp in ['D1','D15','D85']}
+# D85 forward-outcome set (rows aligned with d)
+s85=S['D85']; assert len(s85['m'])==452
+# restrict D85 to d (n=452): same index selection
+sel=s85['m'].index.isin(d.index); 
+def sub(sd,mask): return {k:(v[mask] if hasattr(v,'__getitem__') and not isinstance(v,(str,)) and len(v)==len(mask) else v) for k,v in sd.items()}
+# ---------- CV ----------
+def oof_auc(F,y,reps=30,C=0.3):
+    F=np.asarray(F,float); pr=np.zeros((reps,len(y))); aucs=[]
+    for r in range(reps):
+        for tr,te in StratifiedKFold(5,shuffle=True,random_state=r).split(F,y):
+            mdl=make_pipeline(StandardScaler(),LogisticRegression(C=C,max_iter=3000)).fit(F[tr],y[tr]); pr[r,te]=mdl.decision_function(F[te])
+        aucs.append(roc_auc_score(y,pr[r]))
+    return np.array(aucs),pr.mean(0)
+def boot_diff(y,pa,pb,B=1000,seed=3):
+    g=np.random.default_rng(seed); n=len(y); out=[]
+    for _ in range(B):
+        i=g.integers(0,n,n)
+        if y[i].min()==y[i].max(): continue
+        out.append(roc_auc_score(y[i],pb[i])-roc_auc_score(y[i],pa[i]))
+    return np.mean(out),np.percentile(out,2.5),np.percentile(out,97.5)
+def pcs(Cm,k=10): return PCA(k,random_state=0).fit_transform(Cm)
+rows=[]; allprob={}
+def run(name,sd,y,extra=None,nullrun=True,reps=30):
+    cv=sd['cv'].copy()
+    if extra is not None: cv=pd.concat([cv,extra],axis=1)
+    base=cv.values.astype(float); base=(base-base.mean(0))/np.where(base.std(0)>0,base.std(0),1); dv=sd['div'].copy(); dv=(dv-dv.mean())/dv.std(); nf=sd['NF']; P=pcs(sd['C'])
+    sets={'base':base,'base+richness':np.c_[base,dv.q0],'base+Hill q0-2':np.c_[base,dv.values],'network only (+base)':np.c_[base,nf.values],
+          'base+richness+network':np.c_[base,dv.q0,nf.values],'base+richness+10 CLR PCs':np.c_[base,dv.q0,P]}
+    res={}; 
+    for k,F in sets.items(): res[k]=oof_auc(F,y,reps)
+    ref=res['base+richness']
+    for k,(a,pm) in res.items():
+        dm=boot_diff(y,ref[1],pm) if k!='base+richness' else (0,0,0)
+        rows.append(dict(analysis=name,model=k,n=len(y),events=int(y.sum()),auc=a.mean(),auc_sd_splits=a.std(),d_vs_richness=dm[0],d_lo=dm[1],d_hi=dm[2]))
+    # null networks
+    if nullrun:
+        gain=[]
+        for An in nulls[:20]:
+            Fn=child_feats(An,modid,sd['Pr'],sd['m'].index)
+            a,_=oof_auc(np.c_[base,dv.q0,Fn.values],y,reps=8); gain.append(a.mean())
+        obs=res['base+richness+network'][0][:8].mean()
+        rows.append(dict(analysis=name,model='NULL degree-preserving networks (mean of 20)',n=len(y),events=int(y.sum()),auc=np.mean(gain),auc_sd_splits=np.std(gain),d_vs_richness=np.nan,d_lo=np.nan,d_hi=np.nan))
+        rows.append(dict(analysis=name,model='empirical p (obs >= null)',n=len(y),events=int(y.sum()),auc=(1+sum(g>=obs for g in gain))/(1+len(gain)),auc_sd_splits=np.nan,d_vs_richness=np.nan,d_lo=np.nan,d_hi=np.nan))
+    # LR tests: feature added to richness model
+    Xb=sm.add_constant(np.c_[base,dv.q0]); m0=sm.Logit(y,Xb).fit(disp=0,method='newton',maxiter=100)
+    lr=[]
+    for c in nf.columns:
+        z=(nf[c]-nf[c].mean())/nf[c].std(); m1=sm.Logit(y,np.c_[Xb,z]).fit(disp=0,method='newton',maxiter=100)
+        lr.append(dict(analysis=name,feature=c,OR_per_SD=np.exp(m1.params[-1]),lo=np.exp(m1.conf_int()[-1,0]),hi=np.exp(m1.conf_int()[-1,1]),p=m1.pvalues[-1],LRp=1-__import__('scipy.stats').stats.chi2.cdf(2*(m1.llf-m0.llf),1)))
+    L=pd.DataFrame(lr); L['q_BH']=multipletests(L.p,method='fdr_bh')[1]; return L
+LR=[]
+# D85 whole follow-up (ill ever) -- reverse causation caveat
+m85=s85['m']; mask=np.asarray(m85.index.isin(d.index))
+s=sub(s85,mask) if False else None
+def restrict(sd,mask):
+    r={}
+    for k,v in sd.items():
+        if isinstance(v,pd.DataFrame): r[k]=v[mask]
+        elif isinstance(v,np.ndarray): r[k]=v[mask]
+        else: r[k]=v.loc[mask] if hasattr(v,'loc') else v
+    return r
+s85r=s85; dd=d.copy(); assert (dd.rand_no.values==s85['m'].rand_no.values).all(); dd.index=s85['m'].index
+extra=pd.DataFrame({'pre_n':dd.pre_n,'recent14':dd.recent14},index=dd.index)
+LR.append(run('D1 sample -> any infection (forward)',S['D1'],S['D1']['y']))
+LR.append(run('D15 sample -> any infection',S['D15'],S['D15']['y']))
+LR.append(run('D85 sample <-> ever ill (concurrent/retrospective)',s85r,s85r['y']))
+LR.append(run('D85 sample -> infection after D85 (forward, adj prior illness)',s85r,dd.post_any.values,extra=extra))
+pd.DataFrame(rows).to_csv('out/prediction.csv',index=False); pd.concat(LR).to_csv('out/network_feature_LR.csv',index=False)
+print(pd.DataFrame(rows).round(3).to_string()); print(pd.concat(LR).round(3).to_string())
