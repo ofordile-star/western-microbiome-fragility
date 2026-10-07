@@ -1,0 +1,180 @@
+# =============================================================================
+# 01_DataPrep.R
+# IHAT Paper 2 — Prevotella-mediated infection protection:
+#   community-dependent vs species-autonomous mechanisms
+#
+# Purpose:
+#   Load, clean, and prepare all datasets for downstream analyses.
+#   Computes richness, log-transforms abundances, constructs AE summaries,
+#   and outputs analysis-ready objects saved to .rds for downstream scripts.
+#
+# Author:  Ogochukwu Ofordile
+#          MRC Unit The Gambia at LSHTM, Banjul, The Gambia
+# =============================================================================
+
+library(tidyverse)
+library(lubridate)
+
+# Prevent MASS::select masking dplyr::select if MASS is loaded in session
+if ("MASS" %in% loadedNamespaces()) select <- dplyr::select
+
+# --------------------------------------------------------------------------- #
+# PATHS — update as needed
+# --------------------------------------------------------------------------- #
+microbiome_path <- "C:/Users/oofordile/Desktop/Merged_Illness_Cohorts_WithBiomarkers.csv"
+ae_path         <- "C:/Users/oofordile/Desktop/Adverse Events.csv"
+rds_dir         <- "C:/Users/oofordile/Desktop/IHAT_Paper2_RDS/"
+
+dir.create(rds_dir, showWarnings = FALSE)
+
+# --------------------------------------------------------------------------- #
+# 1. LOAD
+# --------------------------------------------------------------------------- #
+mb <- read_csv(microbiome_path, show_col_types = FALSE)
+ae <- read_csv(ae_path,         show_col_types = FALSE, locale = locale(encoding = "latin1"))
+
+cat(sprintf("Microbiome dataset: %d rows × %d cols\n", nrow(mb), ncol(mb)))
+cat(sprintf("Adverse events:     %d rows\n",            nrow(ae)))
+
+# --------------------------------------------------------------------------- #
+# 2. SPECIES COLUMN BOUNDARIES
+# Species columns run from Prevotella_copri_35.15 to Neisseria_mucosa_<0.01
+# (columns 13 to 500 in the original; confirmed by column names)
+# --------------------------------------------------------------------------- #
+first_species <- "Prevotella_copri_35.15"
+last_before   <- "Ill_Status"
+
+col_names    <- names(mb)
+spec_start   <- which(col_names == first_species)
+spec_end     <- which(col_names == last_before) - 1
+species_cols <- col_names[spec_start:spec_end]
+
+cat(sprintf("Species columns: %d (%s … %s)\n",
+            length(species_cols), species_cols[1], tail(species_cols, 1)))
+
+# --------------------------------------------------------------------------- #
+# 3. TRANSFORM AND DERIVE VARIABLES (all timepoints)
+# --------------------------------------------------------------------------- #
+mb <- mb %>%
+  rename(
+    rand_no       = rand_no,
+    age_enrolment = `age at enrolment`,
+    age_sampling  = `age at sampling`
+  ) %>%
+  mutate(
+    log_Pstercorea = log1p(Prevotella_stercorea_7.05),
+    log_Pcopri     = log1p(Prevotella_copri_35.15),
+    log_CRP        = log1p(CRP),
+    log_Calprotectin = log1p(as.numeric(str_replace(Calprotectin_ug_g, "> 600", "600"))),
+    log_AGP        = log1p(AGP),
+    gender_n       = as.integer(gender == "Male"),
+    Ill_binary     = case_when(
+      Ill_Status == "Ill"     ~ 1L,
+      Ill_Status == "Not-Ill" ~ 0L,
+      TRUE                    ~ NA_integer_
+    )
+  )
+
+# --------------------------------------------------------------------------- #
+# 4. RICHNESS (species observed > 0)
+# --------------------------------------------------------------------------- #
+mb <- mb %>%
+  mutate(richness = rowSums(across(all_of(species_cols), ~ . > 0), na.rm = TRUE))
+
+cat(sprintf("Richness range: %d – %d (mean %.1f)\n",
+            min(mb$richness), max(mb$richness), mean(mb$richness)))
+
+# --------------------------------------------------------------------------- #
+# 5. DELTA WEIGHT (enrolment → D85)
+# --------------------------------------------------------------------------- #
+weight_d85 <- mb %>%
+  filter(timepoints == "D85") %>%
+  dplyr::select(rand_no, Weight_D85 = Weight_kg)
+
+mb <- mb %>%
+  left_join(weight_d85, by = "rand_no") %>%
+  mutate(delta_Weight = Weight_D85 - Weight_enrolment)
+
+# --------------------------------------------------------------------------- #
+# 6. TIMEPOINT SUBSETS
+# --------------------------------------------------------------------------- #
+d1   <- mb %>% filter(timepoints == "D1")
+d15  <- mb %>% filter(timepoints == "D15")
+d85  <- mb %>% filter(timepoints == "D85")
+
+cat(sprintf("D1: %d | D15: %d | D85: %d rows\n", nrow(d1), nrow(d15), nrow(d85)))
+
+# --------------------------------------------------------------------------- #
+# 7. ADVERSE EVENT SUMMARIES
+# --------------------------------------------------------------------------- #
+ae <- ae %>%
+  rename(rand_no = `Randomisation No`) %>%
+  mutate(
+    StartDate = dmy(`Start date`),
+    EndDate   = dmy(`End date`),
+    duration  = as.numeric(EndDate - StartDate)
+  )
+
+make_ae_summary <- function(ae_col) {
+  # Per-child: total episode count and total duration (days)
+  freq <- ae %>%
+    filter(.data[[ae_col]] == 1) %>%
+    group_by(rand_no) %>%
+    summarise(ae_freq = n(), .groups = "drop")
+  
+  dur <- ae %>%
+    filter(.data[[ae_col]] == 1, !is.na(duration)) %>%
+    group_by(rand_no) %>%
+    summarise(ae_dur = sum(duration, na.rm = TRUE), .groups = "drop")
+  
+  full_join(freq, dur, by = "rand_no") %>%
+    replace_na(list(ae_freq = 0, ae_dur = 0))
+}
+
+ae_inf <- make_ae_summary("AE Infection")
+ae_dia <- make_ae_summary("AE Diarrhoea")
+ae_ari <- make_ae_summary("AE ARI")
+ae_fev <- make_ae_summary("AE Fever")
+
+cat(sprintf("AE summaries — Infection: %d | Diarrhoea: %d | ARI: %d | Fever: %d children\n",
+            nrow(ae_inf), nrow(ae_dia), nrow(ae_ari), nrow(ae_fev)))
+
+# --------------------------------------------------------------------------- #
+# 8. ANALYSIS BASE DATASET (D85, one row per child, AE merged)
+# --------------------------------------------------------------------------- #
+
+# Rename iron column to a syntactically valid R name
+mb <- mb %>%
+  rename(iron_arm = Iron)
+
+# Re-derive timepoint subsets after rename so iron_arm is present
+d1  <- mb %>% filter(timepoints == "D1")
+d15 <- mb %>% filter(timepoints == "D15")
+d85 <- mb %>% filter(timepoints == "D85")
+
+base_cols <- c("rand_no", "log_Pstercorea", "log_Pcopri", "richness",
+               "age_enrolment", "gender_n", "HAZ_enrolment", "Ill_binary",
+               "delta_Weight", "Weight_enrolment", "iron_arm")
+
+d85_base <- d85 %>%
+  dplyr::select(all_of(base_cols)) %>%
+  filter(!is.na(HAZ_enrolment), !is.na(age_enrolment))
+
+cat(sprintf("D85 analysis base (complete covariates): %d children\n", nrow(d85_base)))
+
+# --------------------------------------------------------------------------- #
+# 9. SAVE RDS OBJECTS
+# --------------------------------------------------------------------------- #
+saveRDS(mb,       file.path(rds_dir, "mb_full.rds"))
+saveRDS(d1,       file.path(rds_dir, "d1.rds"))
+saveRDS(d15,      file.path(rds_dir, "d15.rds"))
+saveRDS(d85,      file.path(rds_dir, "d85.rds"))
+saveRDS(d85_base, file.path(rds_dir, "d85_base.rds"))
+saveRDS(ae_inf,   file.path(rds_dir, "ae_inf.rds"))
+saveRDS(ae_dia,   file.path(rds_dir, "ae_dia.rds"))
+saveRDS(ae_ari,   file.path(rds_dir, "ae_ari.rds"))
+saveRDS(ae_fev,   file.path(rds_dir, "ae_fev.rds"))
+saveRDS(species_cols, file.path(rds_dir, "species_cols.rds"))
+
+cat("\nAll objects saved to:", rds_dir, "\n")
+cat("Run 02_PathA_Richness.R next.\n")
