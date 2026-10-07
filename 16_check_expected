@@ -1,0 +1,21 @@
+# 16_check_expected.py -- compares regenerated numbers with those reported in Symbiotic_Intelligence_Test_Report.docx. Exit 0 = all pass.
+import os,sys,json; sys.path.insert(0,os.path.dirname(os.path.abspath(__file__))); import config
+import pandas as pd, numpy as np
+d=pd.read_pickle('d85.pkl'); P=pd.read_csv('out/prediction.csv'); g=pd.read_csv('out/group_networks.csv').set_index('metric'); hy=pd.read_csv('out/hysteresis.csv')
+r2=json.load(open('out/results_states.json')); r3=json.load(open('out/results_hysteresis_keystone.json')); nd=pd.read_csv('out/node_table.csv'); ps=nd[nd.is_Ps].iloc[0]
+A,pc,spk,modid,alpha=pd.read_pickle('net.pkl'); dip=pd.read_csv('out/dip_tests.csv').set_index('variable')
+def auc(an,m): return P[(P.analysis.str.startswith(an))&(P.model==m)].auc.iloc[0]
+C=[('Children never ill',(d.grp=='never').sum(),137,0),('Children ill by D85',(d.grp=='ill by D85').sum(),295,0),('Children first ill after D85',(d.grp=='first ill after D85').sum(),20,0),
+('Mean richness never ill',d[d.grp=='never'].q0.mean(),103.06,0.05),('Mean richness ill',d[d.grp!='never'].q0.mean(),93.90,0.05),
+('EBIC-selected penalty',alpha,0.35,1e-9),('Network edges',A.sum()//2,440,0)]
+for an,tag in (('D1 sample','D1'),('D15','D15'),('D85 sample <->','D85 ever ill'),('D85 sample ->','D85 post')):
+    C+= [(f'AUC {tag}, base+richness',auc(an,'base+richness'),{'D1':.584,'D15':.600,'D85 ever ill':.621,'D85 post':.692}[tag],0.003),
+         (f'AUC {tag}, +network',auc(an,'base+richness+network'),{'D1':.568,'D15':.607,'D85 ever ill':.626,'D85 post':.685}[tag],0.003)]
+C+=[('Group networks: edges perm p',g.loc['edges','perm_p'],0.515,0.02),('PC1 dip p',dip.loc['PC1','p'],0.195,0.02),('States chi2 p (ever ill)',r2['states']['chi_p_ever'],0.0012,0.001),
+('PERMANOVA F raw',r3['permanova']['F_raw'],2.86,0.02),('PERMANOVA F residualised',r3['permanova']['F_resid'],1.245,0.02),('PERMANOVA p residualised',r3['permanova']['p_resid'],0.092,0.02),
+('Hysteresis burden p (no richness adj)',hy.p_unadj_richness[0],0.668,0.01),('Hysteresis recency p',hy.p_unadj_richness[1],0.814,0.01),
+('P. stercorea degree',ps.degree,2,0),('P. stercorea betweenness',ps.betweenness,0,1e-9)]
+rows=[];bad=0
+for n,v,e,t in C:
+    ok=abs(float(v)-e)<=t+1e-9; bad+=not ok; rows.append(('PASS' if ok else 'FAIL',n,round(float(v),4),e,t))
+o=pd.DataFrame(rows,columns=['status','check','computed','reported','tolerance']); o.to_csv('out/check_expected_values.csv',index=False); print(o.to_string(index=False)); print(f'\n{len(o)-bad} of {len(o)} checks passed'); sys.exit(1 if bad else 0)
