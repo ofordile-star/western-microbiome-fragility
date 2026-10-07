@@ -1,0 +1,59 @@
+# 17_make_manuscript_figures.py -- Figures 1 and 2 of the manuscript. Needs steps 10-14 to have run.
+# Writes out/fig1.png, out/fig2.png (300 dpi) and vector out/fig1.pdf, out/fig2.pdf (text kept as editable TrueType, fonttype 42).
+import os,sys; sys.path.insert(0,os.path.dirname(os.path.abspath(__file__))); import config
+exec(config.read('common.py'))
+import networkx as nx, matplotlib; matplotlib.use('Agg'); import matplotlib.pyplot as plt
+from matplotlib.patches import FancyArrowPatch, Ellipse
+plt.rcParams.update({'pdf.fonttype':42,'ps.fonttype':42,'font.family':'DejaVu Sans','font.size':8,'axes.spines.top':False,'axes.spines.right':False})
+A,pc,spk2,modid,alpha=pd.read_pickle('net.pkl'); P=pd.read_csv('out/prediction.csv'); GN=pd.read_csv('out/group_networks.csv').set_index('metric')
+# ---------------- Figure 1: conceptual ----------------
+fig=plt.figure(figsize=(7.2,3.3)); 
+ax=fig.add_axes([0.01,0.05,0.30,0.88]); ax.axis('off'); ax.set_xlim(0,1); ax.set_ylim(0,1)
+rng=np.random.default_rng(4); pos={0:(.2,.75),1:(.45,.88),2:(.7,.78),3:(.12,.5),4:(.38,.62),5:(.62,.55),6:(.85,.5),7:(.28,.3),8:(.55,.32),9:(.78,.25)}
+E=[(0,1),(1,2),(0,4),(1,4),(2,5),(4,5),(3,4),(5,6),(4,8),(7,8),(8,9),(5,8),(6,9),(3,7)]
+cols=['#4a7','#4a7','#4a7','#d73','#d73','#d73','#47a','#d73','#47a','#47a']
+for a,b in E: ax.plot([pos[a][0],pos[b][0]],[pos[a][1],pos[b][1]],color='#999',lw=1,zorder=1)
+for k,(x,y) in pos.items(): ax.scatter(x,y,s=170,color=cols[k],edgecolor='k',lw=.6,zorder=2)
+ax.add_patch(Ellipse((.5,.11),.92,.13,fc='#f2e3e3',ec='#a33',lw=.8)); ax.text(.5,.11,'host immune coupling',ha='center',va='center',fontsize=7.5)
+ax.text(.0,.99,'a  Nodes, edges, host coupling',fontsize=8.5,fontweight='bold',va='top')
+# panel b: landscape cartoon
+ax=fig.add_axes([0.37,0.17,0.27,0.66]); x=np.linspace(-2,2,200); y=x**4-2.2*x**2+0.25*x; ax.plot(x,y,color='k',lw=1.2)
+ax.scatter([-1.1],[(-1.1)**4-2.2*1.21+.25*-1.1+.12],s=80,color='#d73',zorder=3); ax.annotate('',xy=(0.1,0.1),xytext=(-0.9,-0.9),arrowprops=dict(arrowstyle='->',color='#a33',lw=1,connectionstyle='arc3,rad=-.4'))
+ax.text(-1.15,-1.9,'state A',ha='center',fontsize=7.5); ax.text(1.1,-1.9,'state B',ha='center',fontsize=7.5); ax.set_xticks([]); ax.set_yticks([]); ax.set_ylim(-2.4,2.2)
+ax.set_xlabel('community configuration',fontsize=7.5); ax.set_ylabel('potential (arbitrary)',fontsize=7.5)
+fig.text(0.37,0.95,'b  Alternative states and return paths',fontsize=8.5,fontweight='bold',va='top'); fig.text(0.505,0.07,'schematic, not data',fontsize=6.5,ha='center',style='italic',color='#666')
+# panel c: criteria -> measurement
+ax=fig.add_axes([0.69,0.05,0.30,0.88]); ax.axis('off'); ax.set_xlim(0,1); ax.set_ylim(0,1)
+ax.text(0,.99,'c  Four operational criteria',fontsize=8.5,fontweight='bold',va='top')
+items=[('Memory','distance from reference\nscales with exposure history'),('State-dependent response','outcome differs by\ncommunity state'),('Anticipatory buffering','topology robustness predicts\nfewer later infections'),('Self-repair','return rate after perturbation;\nkeystone dependence')]
+for i,(h,t) in enumerate(items):
+    yy=.82-i*.215; ax.add_patch(plt.Rectangle((0.005,yy-.085),.985,.18,fc='#eef3f8',ec='#7a9',lw=.8)); ax.text(.03,yy+.045,h,fontsize=7.8,fontweight='bold',va='center'); ax.text(.03,yy-.035,t,fontsize=7,va='center')
+fig.savefig('out/fig1.png',dpi=300); fig.savefig('out/fig1.pdf'); plt.close()
+# ---------------- Figure 2: data ----------------
+fig,axs=plt.subplots(2,2,figsize=(7.4,6.4)); 
+# a network
+ax=axs[0,0]; G=nx.from_numpy_array(A); G.remove_nodes_from([n for n in list(G) if G.degree(n)==0]); psi=spk.index('Prevotella_stercorea_7.05')
+lay=nx.spring_layout(G,seed=3,k=0.9,iterations=300); mc=pd.Series(modid).value_counts(); big=list(mc[mc>=5].index); pal=['#4a7','#d73','#47a','#a4a','#c93','#5aa','#888','#a55']; cmap={m:pal[i%len(pal)] for i,m in enumerate(big)}
+nx.draw_networkx_edges(G,lay,ax=ax,width=.5,edge_color='#aaa'); nx.draw_networkx_nodes(G,lay,ax=ax,node_size=[10+6*G.degree(n) for n in G],node_color=[cmap.get(modid[n],'#ccc') for n in G],linewidths=0)
+if psi in G: nx.draw_networkx_nodes(G,lay,nodelist=[psi],ax=ax,node_size=90,node_color='none',edgecolors='k',linewidths=1.4); x,y=lay[psi]; ax.annotate('P. stercorea',(x,y),xytext=(x+.25,y+.25),fontsize=7,arrowprops=dict(arrowstyle='-',lw=.6))
+ax.set_title('a  Inferred network (day 85)',loc='left',fontsize=8.5,fontweight='bold'); ax.axis('off')
+ax.text(0,-0.02,f'{G.number_of_nodes()} connected taxa shown; {224-G.number_of_nodes()} isolated taxa omitted',transform=ax.transAxes,fontsize=6.5,va='top')
+# b delta AUC
+ax=axs[0,1]; rows=P[P.model=='base+richness+network']; lab=['D1 sample →\nany infection','D15 sample →\nany infection','D85 sample ↔\never ill','D85 sample →\ninfection after D85']
+for i,(_,r) in enumerate(rows.iterrows()): ax.errorbar(r.d_vs_richness,3-i,xerr=[[r.d_vs_richness-r.d_lo],[r.d_hi-r.d_vs_richness]],fmt='o',color='k',capsize=3,ms=4)
+ax.axvline(0,color='#a33',lw=.8,ls='--'); ax.set_yticks(range(4)); ax.set_yticklabels(lab[::-1],fontsize=7); ax.set_xlabel('Change in AUC vs richness model (95% CI)'); ax.set_xlim(-0.06,0.06)
+ax.set_title('b  Gain over richness model',loc='left',fontsize=8.5,fontweight='bold')
+# c group networks z
+ax=axs[1,0]; mets=['edges','modularity','lcc','robust','deg_cv']; nm=['Edges','Modular-\nity','Giant\ncomp.','Hub\nrobust.','Degree\nCV']
+z=[GN.loc[m,'diff']/GN.loc[m,'null_sd'] for m in mets]; zm=[GN.loc[m,'diff_matched']/GN.loc[m,'null_sd'] for m in mets]; xx=np.arange(5)
+ax.bar(xx-.19,z,.36,color='#7a9',label='size-matched'); ax.bar(xx+.19,zm,.36,color='#d73',label='size- and richness-matched'); ax.axhspan(-1.96,1.96,color='#ddd',alpha=.6,lw=0)
+ax.set_xticks(xx); ax.set_xticklabels(nm,fontsize=6.5); ax.set_ylabel('Never ill − ill, in null SD units'); ax.set_ylim(-3,3); ax.legend(fontsize=6.5,frameon=False,loc='upper right')
+ax.set_title('c  Network structure by illness',loc='left',fontsize=8.5,fontweight='bold')
+# d hysteresis
+ax=axs[1,1]; cen=C[d.grp=='never'].mean(0); dist=np.linalg.norm(C-cen,axis=1); il=d.pre_n>0; bur=d.pre_n.clip(upper=3)[il].astype(int); dd=dist[il.values]
+groups=[dd[bur.values==k] for k in (1,2,3)]; bp=ax.boxplot(groups,positions=[1,2,3],widths=.5,patch_artist=True,showfliers=False)
+for p in bp['boxes']: p.set_facecolor('#eef3f8')
+for k,g in zip((1,2,3),groups): ax.scatter(np.random.default_rng(k).normal(k,.07,len(g)),g,s=5,color='#47a',alpha=.5)
+ax.set_xticks([1,2,3]); ax.set_xticklabels([f'1 episode\n(n={len(groups[0])})',f'2 episodes\n(n={len(groups[1])})',f'3+ episodes\n(n={len(groups[2])})'],fontsize=7); ax.set_ylabel('Aitchison distance to never-ill centroid')
+ax.set_title('d  Displacement by infection burden',loc='left',fontsize=8.5,fontweight='bold')
+plt.tight_layout(); fig.savefig('out/fig2.png',dpi=300); fig.savefig('out/fig2.pdf'); print('ok')
