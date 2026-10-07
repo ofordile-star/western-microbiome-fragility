@@ -1,0 +1,31 @@
+# 04_child_level_data.R -- builds the child-level analysis table (Day 85 diversity, redundancy, species-subset richness,
+# illness timing groups, burden and recency) used by the figure statistics. Output stays in work/ (contains child identifiers; do not publish).
+suppressMessages({library(tidyverse);library(lubridate)})
+.args <- commandArgs(FALSE); .f <- sub("--file=", "", .args[grep("--file=", .args)])
+SCRIPT_DIR <- if (length(.f)) dirname(normalizePath(.f, winslash = "/")) else if (file.exists("config.R")) normalizePath(getwd(), winslash = "/") else if (file.exists(file.path("scripts", "config.R"))) normalizePath(file.path(getwd(), "scripts"), winslash = "/") else stop("Set the working directory to the package folder or its scripts folder.")
+source(file.path(SCRIPT_DIR, "config.R")); source(file.path(SCRIPT_DIR, "fr_helpers.R"))
+
+mb <- readRDS(MB_FULL); sc <- readRDS(SPECIES)
+ae <- read_csv(AE_FILE, locale=locale(encoding="latin1"), show_col_types=FALSE) %>% rename(rand_no=`Randomisation No`, sdy=`Study Day`)
+d <- mb %>% filter(timepoints=="D85", !is.na(Ill_binary)); X <- as.matrix(d[,sc]); X[is.na(X)] <- 0
+d$q0 <- apply(X,1,hill,q=0); d$q1 <- apply(X,1,hill,q=1); d$q2 <- apply(X,1,hill,q=2); d$assigned <- rowSums(X)
+Z <- as.matrix(read.csv(SIM_FILE,row.names=1,check.names=FALSE)); su <- intersect(sc,rownames(Z)); Z <- Z[su,su]; Xm <- X[,su]
+for (q in 0:2) d[[paste0("red",q)]] <- apply(Xm,1,redundancy_ratio,Z=Z,q=q)
+prev <- colMeans(X>0); mean_ab <- colMeans(X/rowSums(X))
+cls <- ifelse(prev>=0.5,"common",ifelse(prev>=0.1,"intermediate","rare"))
+for (k in c("common","intermediate","rare")) d[[paste0("rich_",k)]] <- rowSums(X[,cls==k,drop=FALSE]>0)
+top5 <- names(sort(mean_ab,decreasing=TRUE))[1:5]; cat("top5:", top5, "\n")
+d$rich_noTop5 <- rowSums(X[,!(sc %in% top5)]>0)
+ps <- "Prevotella_stercorea_7.05"; d$rich_noPs <- rowSums(X[,sc!=ps]>0); d$lps <- log1p(d[[ps]])
+nm <- sapply(sc, function(c){ b <- sub("_(<?[0-9.]+)$","",c); p <- strsplit(b,"_")[[1]]; rest <- paste(p[-1],collapse="_"); !(rest=="" || grepl("^sp\\.|bacterium|_sp\\.",rest) || grepl("bacterium",b)) })
+d$rich_named <- rowSums(X[,nm,drop=FALSE]>0); d$rich_unnamed <- rowSums(X[,!nm,drop=FALSE]>0)
+cat("species by prevalence class:", table(cls), " named:", sum(nm), "\n")
+write_csv(tibble(class = c("common", "intermediate", "rare", "named", "unnamed"), n = c(sum(cls == "common"), sum(cls == "intermediate"), sum(cls == "rare"), sum(nm), sum(!nm))), file.path(RESULTS, "species_class_counts.csv"))
+pre <- ae %>% filter(`AE Infection`==1, sdy<=85) %>% mutate(dur=as.numeric(dmy(`End date`)-dmy(`Start date`))+1, endd=sdy+dur-1) %>% group_by(rand_no) %>% summarise(pre_n=n(), pre_dur=sum(dur,na.rm=T), last_end=max(endd,na.rm=T), .groups="drop")
+post <- ae %>% filter(`AE Infection`==1, sdy>85) %>% count(rand_no,name="post_n")
+d <- d %>% left_join(pre,by="rand_no") %>% left_join(post,by="rand_no") %>% mutate(pre_n=replace_na(pre_n,0L), post_n=replace_na(post_n,0L), pre_dur=replace_na(pre_dur,0), since=85-last_end,
+  grp=case_when(pre_n==0 & post_n==0 ~ "never", pre_n==0 ~ "first ill after D85", TRUE ~ "ill by D85"))
+rank_ab <- map_dfr(c("never","ill"), function(g){ idx <- if (g=="never") d$grp=="never" else d$grp!="never"; r <- X[idx,]/rowSums(X[idx,]); srt <- t(apply(r,1,sort,decreasing=TRUE)); tibble(group=g, rank=1:ncol(srt), mean=colMeans(srt), se=apply(srt,2,sd)/sqrt(nrow(srt))) }) %>% filter(rank<=150)
+write_csv(rank_ab,file.path(WORK,"rank_abundance.csv"))
+write_csv(d %>% dplyr::select(rand_no, grp, Ill_binary, q0,q1,q2,red0,red1,red2,assigned,starts_with("rich_"),lps,pre_n,pre_dur,since,post_n,age_enrolment,gender_n,HAZ_enrolment,iron_arm,season,location), file.path(WORK,"child_level.csv"))
+cat("rows:", nrow(d), "groups:", paste(names(table(d$grp)), table(d$grp)), "\n")
