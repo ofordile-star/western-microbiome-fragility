@@ -1,0 +1,40 @@
+# 03_post_sampling.R -- exploratory post-sampling analysis: infection episodes after study day 85 in all children with a Day 85 sample,
+# quasi-Poisson, adjusted for covariates, infections to day 85 and any episode within 14 days before the sample.
+# Rate ratios per SD of diversity (q = 0, 1, 2) and of redundancy given richness. Output: results/forward_results.csv
+suppressMessages({library(tidyverse);library(broom);library(lubridate)})
+.args <- commandArgs(FALSE); .f <- sub("--file=", "", .args[grep("--file=", .args)])
+SCRIPT_DIR <- if (length(.f)) dirname(normalizePath(.f, winslash = "/")) else if (file.exists("config.R")) normalizePath(getwd(), winslash = "/") else if (file.exists(file.path("scripts", "config.R"))) normalizePath(file.path(getwd(), "scripts"), winslash = "/") else stop("Set the working directory to the package folder or its scripts folder.")
+source(file.path(SCRIPT_DIR, "config.R")); source(file.path(SCRIPT_DIR, "fr_helpers.R"))
+mb <- readRDS(MB_FULL); sc <- readRDS(SPECIES)
+ae <- read_csv(AE_FILE, locale=locale(encoding="latin1"), show_col_types=FALSE) %>% rename(rand_no=`Randomisation No`, sd=`Study Day`)
+d <- mb %>% filter(timepoints=="D85", !is.na(Ill_binary)); X <- as.matrix(d[,sc]); X[is.na(X)] <- 0
+d$q0 <- apply(X,1,hill,q=0); d$q1 <- apply(X,1,hill,q=1); d$q2 <- apply(X,1,hill,q=2); d$depth <- as.numeric(scale(rowSums(X)))
+Z <- as.matrix(read.csv(SIM_FILE,row.names=1,check.names=FALSE)); su <- intersect(sc,rownames(Z)); Z <- Z[su,su]; Xm <- X[,su]
+for (q in 1:2) d[[paste0("red",q)]] <- apply(Xm,1,redundancy_ratio,Z=Z,q=q)
+cnt <- function(flag, win) { e <- ae %>% filter(.data[[flag]]==1, if (win=="pre") sd<=85 else sd>85) %>% count(rand_no); setNames(e,c("rand_no",paste0(flag,"_",win))) }
+for (f in c("AE Infection","AE ARI","AE Diarrhoea","AE Fever")) for (w in c("pre","post")) { t <- cnt(f,w); nm <- names(t)[2]; d <- d %>% left_join(t,by="rand_no"); d[[nm]] <- replace_na(d[[nm]],0L) }
+cat("Children in cohort:", nrow(d), "\n")
+for (f in c("AE Infection","AE ARI","AE Diarrhoea","AE Fever")) cat(sprintf("%-13s post-D85: children with >=1 = %3d, episodes = %3d | pre-D85: children = %3d\n", f, sum(d[[paste0(f,"_post")]]>0), sum(d[[paste0(f,"_post")]]), sum(d[[paste0(f,"_pre")]]>0)))
+d$pre_n <- d$`AE Infection_pre`
+last <- ae %>% filter(`AE Infection`==1, sd<=85) %>% mutate(endd = sd + as.numeric(dmy(`End date`)-dmy(`Start date`))) %>% group_by(rand_no) %>% summarise(last_end=max(endd),.groups="drop")
+d <- d %>% left_join(last,by="rand_no") %>% mutate(recent14 = as.integer(!is.na(last_end) & last_end >= 71))
+cat("pre-D85 episode within 14 days before sample:", sum(d$recent14), "\n")
+covs <- "age_enrolment + gender_n + HAZ_enrolment + iron_arm + season + location + depth + pre_n + recent14"
+wald <- function(m) tidy(m) %>% mutate(conf.low=exp(estimate-1.96*std.error), conf.high=exp(estimate+1.96*std.error), estimate=exp(estimate))
+sdz <- function(x) as.numeric(scale(x))
+for (v in c("q0","q1","q2","red1","red2")) d[[paste0(v,"_z")]] <- sdz(d[[v]])
+res <- list()
+for (oc in c("AE Infection","AE ARI","AE Diarrhoea","AE Fever")) {
+  d$y <- d[[paste0(oc,"_post")]]
+  for (v in c("q0","q1","q2")) {
+    m <- tryCatch(glm(as.formula(paste("y ~", paste0(v,"_z"), "+", covs)), family=quasipoisson, data=d, mustart=pmax(d$y,0.1)), error=function(e) NULL); if (is.null(m)) { cat("FAILED:", oc, v, "\n"); next }
+    t <- wald(m) %>% filter(term==paste0(v,"_z")); res[[length(res)+1]] <- t %>% mutate(outcome=oc, exposure=v, model="post-D85 episodes, all children, adj prior illness")
+  }
+  for (q in 1:2) { m <- tryCatch(glm(as.formula(paste("y ~", paste0("q0_z"), "+", paste0("red",q,"_z"), "+", covs)), family=quasipoisson, data=d, mustart=pmax(d$y,0.1)), error=function(e) NULL); if (is.null(m)) { cat("FAILED:", oc, "red", q, "\n"); next }
+    t <- wald(m) %>% filter(term==paste0("red",q,"_z")); res[[length(res)+1]] <- t %>% mutate(outcome=oc, exposure=paste0("red",q," | richness"), model="as above + richness") }
+}
+r <- bind_rows(res) %>% transmute(outcome, exposure, RR_per_SD=round(estimate,2), lo=round(conf.low,2), hi=round(conf.high,2), p=round(p.value,3))
+write_csv(r,file.path(RESULTS,"forward_results.csv")); print(as.data.frame(r), row.names=FALSE)
+# three-group richness contrast: is richness LOWER in the ill-before group than in the ill-after group?
+d$grp <- case_when(d$`AE Infection_pre`==0 & d$`AE Infection_post`==0 ~ "never", d$`AE Infection_pre`==0 ~ "post_only", TRUE ~ "pre")
+t1 <- t.test(q0 ~ I(grp=="post_only"), data=d %>% filter(grp!="never")); print(t1$estimate); cat("pre minus post_only richness diff:", round(diff(rev(t1$estimate)),1), " 95% CI", round(-t1$conf.int,1), "\n")
