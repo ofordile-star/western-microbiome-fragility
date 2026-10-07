@@ -1,0 +1,64 @@
+# 11_global_network.py -- infers the global D85 species network (graphical lasso on CLR, EBIC), modules, per-child topology features, 20 degree-preserving null networks.
+import os,sys; sys.path.insert(0,os.path.dirname(os.path.abspath(__file__))); import config
+exec(config.read('common.py'))
+import networkx as nx, json, time
+from sklearn.covariance import graphical_lasso
+from scipy.sparse.csgraph import connected_components
+from scipy import sparse, stats
+rng=np.random.default_rng(1)
+def fit(Cm,alpha):
+    Z=(Cm-Cm.mean(0))/Cm.std(0); S=np.corrcoef(Z.T)
+    _,P=graphical_lasso(S,alpha=alpha,max_iter=300,tol=1e-3)
+    A=(np.abs(P)>1e-6).astype(int); np.fill_diagonal(A,0)
+    pc=-P/np.sqrt(np.outer(np.diag(P),np.diag(P))); np.fill_diagonal(pc,0); pc=pc*A
+    return A,pc,S,P
+def ebic(S,P,n,gam=0.5):
+    p=S.shape[0]; ll=n/2*(np.linalg.slogdet(P)[1]-np.trace(S@P)); E=((np.abs(P)>1e-6).sum()-p)//2
+    return -2*ll+E*np.log(n)+4*gam*E*np.log(p)
+grid=[0.2,0.25,0.3,0.35,0.4,0.45,0.5,0.55,0.6,0.7]
+res=[]
+for a in grid:
+    A,pc,S,P=fit(C,a); res.append((a,ebic(S,P,len(C)),A.sum()//2))
+print(res); alpha=min(res,key=lambda r:r[1])[0]; print('alpha',alpha)
+A,pc,S,P=fit(C,alpha); p=len(spk)
+G=nx.from_numpy_array(A); nx.relabel_nodes(G,dict(enumerate(spk)),copy=False)
+for i,j in zip(*np.triu_indices(p,1)):
+    if A[i,j]: G[spk[i]][spk[j]]['w']=pc[i,j]
+deg=A.sum(1); print('edges',A.sum()//2,'density',A.sum()/(p*(p-1)),'pos frac',(pc[np.triu_indices(p,1)]>0).sum()/max(1,A.sum()//2))
+mods=nx.community.louvain_communities(G,seed=1,resolution=1.0); modid=np.zeros(p,int)
+for k,m in enumerate(mods):
+    for s in m: modid[spk.index(s)]=k
+print('modules',[len(m) for m in mods],'Q',nx.community.modularity(G,mods))
+def lcc(Am,keepmask):
+    sub=Am[np.ix_(keepmask,keepmask)]
+    if sub.shape[0]==0: return 0
+    nc,lab=connected_components(sparse.csr_matrix(sub),directed=False); return np.bincount(lab).max()/Am.shape[0]*0+np.bincount(lab).max()
+def robust(Am,present,order_score,steps=10):
+    # targeted attack among present nodes by score; return mean LCC fraction (of present count) across removal fractions
+    idx=np.where(present)[0]
+    if len(idx)<10: return np.nan
+    ordr=idx[np.argsort(-order_score[idx])]; vals=[]
+    for f in np.linspace(0,0.5,steps+1):
+        k=int(round(f*len(idx))); m=present.copy(); m[ordr[:k]]=False
+        vals.append(lcc(Am,m)/len(idx))
+    return float(np.mean(vals))
+def child_feats(Am,mid,Pres,degv):
+    out=[]; hub=degv>=np.quantile(degv,0.9)
+    for r in Pres:
+        idx=np.where(r)[0]; sub=Am[np.ix_(idx,idx)]; n=len(idx)
+        dens=sub.sum()/(n*(n-1)); md=sub.sum(1).mean()
+        cnt=np.bincount(mid[idx],minlength=mid.max()+1); q=cnt/cnt.sum(); ev=np.exp(-(q[q>0]*np.log(q[q>0])).sum())
+        out.append((dens,md,hub[idx].mean(),ev,robust(Am,r,degv)))
+    return pd.DataFrame(out,columns=['net_density','net_meandeg','net_hubfrac','net_modeven','net_robust'],index=d.index)
+Pres=(X[:,keep]>0)
+NF=child_feats(A,modid,Pres,deg.astype(float)); NF.to_pickle('NF.pkl')
+# degree-preserving null networks
+def rewire(Am,nswap=10):
+    G0=nx.from_numpy_array(Am); nx.double_edge_swap(G0,nswap=nswap*G0.number_of_edges(),max_tries=nswap*G0.number_of_edges()*20,seed=int(rng.integers(1e9)))
+    return nx.to_numpy_array(G0).astype(int)
+NN=[]
+for k in range(20):
+    An=rewire(A); Fn=child_feats(An,modid,Pres,An.sum(1).astype(float)); NN.append(Fn)
+pd.to_pickle(NN,'NN.pkl'); pd.to_pickle((A,pc,spk,modid,alpha),'net.pkl')
+nx.write_gexf(G,'out/global_network.gexf')
+print(NF.describe().T[['mean','std']]); print(NF.corrwith(d.q0))
