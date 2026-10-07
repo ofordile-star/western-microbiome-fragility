@@ -1,0 +1,47 @@
+# 05_additional_tests.R -- adjusted richness tests by timepoint (Table S3), richness robustness checks (Fig. S1),
+# Shannon vs richness at Day 85 (Table S2), and dose-response / recovery slopes (Table S8 note).
+suppressMessages({library(tidyverse);library(broom);library(lubridate)})
+.args <- commandArgs(FALSE); .f <- sub("--file=", "", .args[grep("--file=", .args)])
+SCRIPT_DIR <- if (length(.f)) dirname(normalizePath(.f, winslash = "/")) else if (file.exists("config.R")) normalizePath(getwd(), winslash = "/") else if (file.exists(file.path("scripts", "config.R"))) normalizePath(file.path(getwd(), "scripts"), winslash = "/") else stop("Set the working directory to the package folder or its scripts folder.")
+source(file.path(SCRIPT_DIR, "config.R")); source(file.path(SCRIPT_DIR, "fr_helpers.R"))
+mb <- readRDS(MB_FULL); sc <- readRDS(SPECIES)
+ae <- read_csv(AE_FILE, locale = locale(encoding = "latin1"), show_col_types = FALSE) %>% rename(rand_no = `Randomisation No`, sdy = `Study Day`)
+mb$age_grp <- mb[["3agegroups based on age at sampling"]]
+
+# (a) adjusted richness difference by timepoint: illness tested after age group (Table S3)
+tp <- map_dfr(c("D1", "D15", "D85"), function(t) {
+  d <- mb %>% filter(timepoints == t, Ill_Status %in% c("Ill", "Not-Ill"))
+  m <- lm(richness ~ Ill_Status + age_grp, d); m2 <- lm(richness ~ age_grp + Ill_Status, d)
+  a <- anova(m2)["Ill_Status", ]; ci <- confint(m)["Ill_StatusNot-Ill", ]
+  tibble(timepoint = t, n = nrow(d), diff_never_minus_ill = unname(coef(m)["Ill_StatusNot-Ill"]), lo = ci[1], hi = ci[2], F = a$`F value`, p = a$`Pr(>F)`)
+})
+write_csv(tp, file.path(RESULTS, "timepoint_richness_tests.csv")); print(tp)
+
+# (b) richness robustness at Day 85 (Fig. S1): odds ratio of any infection per additional species
+d <- mb %>% filter(timepoints == "D85", !is.na(Ill_binary)); X <- as.matrix(d[, sc]); X[is.na(X)] <- 0
+d$rich <- rowSums(X > 0); stopifnot(all(d$rich == d$richness, na.rm = TRUE))
+d$assigned <- rowSums(X); d$rich_rare <- apply(X, 1, rarefy_richness, n = 10000); d$rich_filt <- rowSums(X[, colMeans(X > 0) >= 0.05, drop = FALSE] > 0)
+cv <- "age_enrolment + gender_n + HAZ_enrolment + iron_arm + season + location + assigned"
+orf <- function(f, v, lab) { m <- glm(as.formula(f), family = binomial, data = d); s <- summary(m)$coefficients[v, ]
+  tibble(model = lab, OR = exp(s[1]), lo = exp(s[1] - 1.96 * s[2]), hi = exp(s[1] + 1.96 * s[2]), p = s[4], n = nobs(m)) }
+rob <- bind_rows(orf("Ill_binary ~ rich", "rich", "Unadjusted"), orf(paste("Ill_binary ~ rich +", cv), "rich", "Adjusted"),
+                 orf(paste("Ill_binary ~ rich_rare +", cv), "rich_rare", "Adjusted, rarefied to 10,000 counts"),
+                 orf(paste("Ill_binary ~ rich_filt +", cv), "rich_filt", "Adjusted, species in <5% of samples removed"))
+write_csv(rob, file.path(RESULTS, "richness_robustness_or.csv")); print(rob)
+
+# (c) richness and Shannon at Day 85 (Table S2)
+p <- X / rowSums(X); d$shannon <- -rowSums(ifelse(p > 0, p * log(p), 0))
+cmp <- function(v) { a <- d[[v]][d$Ill_binary == 0]; b <- d[[v]][d$Ill_binary == 1]; sp <- sqrt(((length(a) - 1) * var(a) + (length(b) - 1) * var(b)) / (length(a) + length(b) - 2))
+  tibble(measure = v, mean_never = mean(a), sd_never = sd(a), mean_ill = mean(b), sd_ill = sd(b), cohen_d_never_minus_ill = (mean(a) - mean(b)) / sp, welch_p = t.test(a, b)$p.value) }
+write_csv(bind_rows(cmp("rich"), cmp("shannon")), file.path(RESULTS, "richness_shannon_day85.csv"))
+
+# (d) dose-response and recovery (children with infection on or before study day 85)
+pre <- ae %>% filter(`AE Infection` == 1, sdy <= 85) %>% mutate(dur = as.numeric(dmy(`End date`) - dmy(`Start date`)) + 1, endd = sdy + dur - 1) %>%
+  group_by(rand_no) %>% summarise(pre_n = n(), pre_dur = sum(dur, na.rm = TRUE), last_end = max(endd, na.rm = TRUE), .groups = "drop")
+d <- d %>% left_join(pre, by = "rand_no") %>% mutate(pre_n = replace_na(pre_n, 0L), pre_dur = replace_na(pre_dur, 0), since = 85 - last_end)
+cv2 <- "age_enrolment + gender_n + HAZ_enrolment + iron_arm + season + location"
+sl <- function(term, data, lab) { m <- lm(as.formula(paste("rich ~", term, "+", cv2)), data); t <- tidy(m, conf.int = TRUE) %>% filter(term == !!term)
+  tibble(model = lab, estimate = t$estimate, lo = t$conf.low, hi = t$conf.high, p = t$p.value, n = nobs(m)) }
+write_csv(bind_rows(sl("pre_n", d, "Richness per additional infection to day 85"), sl("pre_dur", d, "Richness per illness day to day 85"),
+                    sl("since", d %>% filter(pre_n > 0), "Richness per day since last episode ended (children with infection by day 85)")),
+          file.path(RESULTS, "dose_response_slopes.csv"))
