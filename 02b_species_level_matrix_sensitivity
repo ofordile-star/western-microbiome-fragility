@@ -1,0 +1,40 @@
+# 02b_species_level_matrix_sensitivity.R -- sensitivity analysis for the redundancy models (M2): redundancy computed from the similarity
+# matrix restricted to the species with species-level genome matches (level == "species" in derived/species_similarity_mapping.csv).
+# Same outcomes, covariates, cap and negative binomial model as 02_main_models.R; only the species set used for redundancy changes.
+# Output: results/FR_species_level_only.csv   (run after 01a, 01b and 02)
+suppressMessages({library(tidyverse); library(MASS); library(broom); library(lubridate)})
+.args <- commandArgs(FALSE); .f <- sub("--file=", "", .args[grep("--file=", .args)])
+SCRIPT_DIR <- if (length(.f)) dirname(normalizePath(.f, winslash = "/")) else if (file.exists("config.R")) normalizePath(getwd(), winslash = "/") else if (file.exists(file.path("scripts", "config.R"))) normalizePath(file.path(getwd(), "scripts"), winslash = "/") else stop("Set the working directory to the package folder or its scripts folder.")
+source(file.path(SCRIPT_DIR, "config.R")); source(file.path(SCRIPT_DIR, "fr_helpers.R"))
+
+mb <- readRDS(MB_FULL); sc <- readRDS(SPECIES)
+d85 <- mb %>% filter(timepoints == "D85", !is.na(Ill_binary)); X <- as.matrix(d85[, sc]); X[is.na(X)] <- 0
+d85$rich_q0 <- apply(X, 1, hill, q = 0); d85$hill_q1 <- apply(X, 1, hill, q = 1); d85$hill_q2 <- apply(X, 1, hill, q = 2); d85$depth_asg <- rowSums(X)
+
+# restricted similarity matrix: species-level genome matches only
+mp <- read_csv(file.path(DERIVED, "species_similarity_mapping.csv"), show_col_types = FALSE)
+Z  <- as.matrix(read.csv(SIM_FILE, row.names = 1, check.names = FALSE))
+sp_use <- intersect(sc, intersect(rownames(Z), mp$col[mp$level == "species"]))
+Z <- Z[sp_use, sp_use]; Xm <- X[, sp_use, drop = FALSE]
+cat("Species in restricted matrix:", length(sp_use), "\n")
+for (q in 0:2) d85[[paste0("red_q", q)]] <- apply(Xm, 1, redundancy_ratio, Z = Z, q = q)
+
+# outcomes: same definitions as 02_main_models.R
+ae <- read_csv(AE_FILE, locale = locale(encoding = "latin1"), show_col_types = FALSE)
+cnt <- function(df) df %>% group_by(`Randomisation No`) %>% summarise(n = n(), .groups = "drop")
+out_list <- list(ARI = ae %>% filter(`AE ARI` == 1), Diarrhoea = ae %>% filter(`AE Diarrhoea` == 1),
+                 All_illness = ae %>% filter(`AE Infection` == 1), Illness_exARI = ae %>% filter(`AE Infection` == 1 & !(`AE ARI` %in% 1)))
+for (nm in names(out_list)) { tmp <- cnt(out_list[[nm]]); names(tmp) <- c("rand_no", nm)
+  d85 <- d85 %>% left_join(tmp, by = "rand_no") %>% mutate(!!nm := replace_na(.data[[nm]], 0L)) }
+
+covs <- "age_enrolment + gender_n + HAZ_enrolment + iron_arm + season + location + depth_asg"
+res <- list()
+for (oc in names(out_list)) for (qq in 0:2) {
+  div <- c("rich_q0", "hill_q1", "hill_q2")[qq + 1]; red <- paste0("red_q", qq)
+  dd <- d85[d85[[oc]] <= 5, ]
+  m <- suppressWarnings(tryCatch(glm.nb(as.formula(paste(oc, "~", div, "+", red, "+", covs)), data = dd), error = function(e) NULL))
+  if (is.null(m)) next
+  res[[length(res) + 1]] <- tidy(m, exponentiate = TRUE, conf.int = TRUE) %>% filter(term == red) %>% mutate(outcome = oc, q_order = qq, n = nobs(m))
+}
+res <- bind_rows(res); write_csv(res, file.path(RESULTS, "FR_species_level_only.csv"))
+print(res %>% transmute(outcome, q_order, RR = round(estimate, 2), lo = round(conf.low, 2), hi = round(conf.high, 2), p = round(p.value, 3), n), n = Inf)
