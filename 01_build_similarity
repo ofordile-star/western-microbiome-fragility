@@ -1,0 +1,104 @@
+# 01_build_similarity.py -- species x species gene-content similarity for the IHAT-GUT species columns.
+# Source of genomes and KEGG-orthology (KO) annotations: PICRUSt2 default bacterial reference (GTDB-based),
+#   https://github.com/picrust/picrust2  ->  picrust2/default_files/bacteria/{ko.txt.gz, bacteria_metadata.csv.gz}
+# Similarity = weighted Jaccard of KO presence-frequency profiles (Leinster-Cobbold similarity matrix, 1 on the diagonal).
+# Species-level profile where the species name matches GTDB/NCBI names; otherwise the genus-mean profile (flagged in the mapping file).
+# Output: derived/species_similarity.csv, derived/species_similarity_mapping.csv
+import os, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import config
+import urllib.request, hashlib
+_out = os.path.join(config.DERIVED, 'species_similarity.csv')
+if os.path.exists(_out) and not os.environ.get('REBUILD_SIM'):
+    print('Using the existing similarity matrix', _out)
+    print('(set REBUILD_SIM=1 to rebuild it; that downloads two reference files, about 55 MB, once)')
+    raise SystemExit(0)
+# Only two files are needed from the PICRUSt2 repository. They are fetched from a pinned commit and checked against SHA-256.
+COMMIT = 'd91caaa287444a79161023f7bf1547202b7acd64'
+FILES = {'ko.txt.gz': 'd2d8ce141030afd2d5b1c1276609ee01849165f51cd49460598ee65ff04c0042',
+         'bacteria_metadata.csv.gz': '8ba52899601012f2a8efac1fc7a9bfd371e131be26e399f7448a0c05fa88ee47'}
+def sha256(path):
+    h = hashlib.sha256()
+    with open(path, 'rb') as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b''): h.update(chunk)
+    return h.hexdigest()
+_pdir = os.path.join(config.WORK, 'picrust2_files'); os.makedirs(_pdir, exist_ok=True)
+for _f, _h in FILES.items():
+    _p = os.path.join(_pdir, _f)
+    if not os.path.exists(_p):
+        _u = f'https://raw.githubusercontent.com/picrust/picrust2/{COMMIT}/picrust2/default_files/bacteria/{_f}'
+        print('downloading', _u); urllib.request.urlretrieve(_u, _p)
+    assert sha256(_p) == _h, f'checksum mismatch for {_f}: the file differs from the one used in the manuscript'
+PICRUST_BASE = _pdir + os.sep
+SPECIES_COLS_RDS = config.SPECIES
+OUT_DIR = config.DERIVED+os.sep
+import pandas as pd, numpy as np, re, gzip, pyreadr, sys, time
+base=PICRUST_BASE
+meta = pd.read_csv(base+'bacteria_metadata.csv.gz', usecols=['accession','gtdb_taxonomy','ncbi_organism_name','checkm_completeness','checkm_contamination'])
+meta['gtdb_sp'] = meta.gtdb_taxonomy.str.extract(r's__([^;]*)$')[0].fillna('')
+meta['gtdb_gen'] = meta.gtdb_taxonomy.str.extract(r'g__([^;]*);')[0].fillna('')
+meta['sp_clean'] = meta.gtdb_sp.str.replace(r'_[A-Z]{1,2}(?=\s|$)','',regex=True).str.strip()   # drop GTDB letter suffixes
+meta['gen_clean'] = meta.gtdb_gen.str.replace(r'_[A-Z]{1,2}$','',regex=True)
+meta['ncbi_sp'] = meta.ncbi_organism_name.fillna('').str.split().str[:2].str.join(' ')
+print('genomes in metadata:', len(meta))
+# my species
+sc = pyreadr.read_r(SPECIES_COLS_RDS)[None].iloc[:,0].tolist()
+rows=[]
+for c in sc:
+    b = re.sub(r'_(<?[0-9.]+)$','',c)
+    parts=b.split('_'); genus=parts[0]; rest=' '.join(parts[1:])
+    kind = 'genus_only' if rest=='' else ('sp' if (rest.startswith('sp.') or rest=='sp.' or 'bacterium' in b or re.search(r'_sp\.',b)) else 'named')
+    rows.append((c,genus,rest,kind))
+sp = pd.DataFrame(rows, columns=['col','genus','epithet','kind'])
+sp['name']= sp.genus+' '+sp.epithet
+named = sp[sp.kind=='named']
+have_sp = set(meta.sp_clean)|set(meta.ncbi_sp)
+named_matched = named[named.name.isin(have_sp)]
+print('named species:',len(named),' matched to >=1 genome by species name:',len(named_matched))
+have_gen = set(meta.gen_clean)|set(meta.ncbi_organism_name.fillna('').str.split().str[0])
+print('genus-level available for sp./genus-only/unmatched:', int(sp[~sp.col.isin(named_matched.col)].genus.isin(have_gen).sum()), 'of', int((~sp.col.isin(named_matched.col)).sum()))
+# genome table header only
+hdr = pd.read_csv(base+'ko.txt.gz', sep='\t', nrows=0)
+print('ko table columns:', hdr.shape[1], 'first col:', hdr.columns[0])
+sp.to_pickle(os.path.join(config.WORK,'sp.pkl')); meta.to_pickle(os.path.join(config.WORK,'meta.pkl'))
+
+# ---- step 2 ----
+t0=time.time()
+base=PICRUST_BASE
+sp=pd.read_pickle(os.path.join(config.WORK,'sp.pkl')); meta=pd.read_pickle(os.path.join(config.WORK,'meta.pkl'))
+meta['ncbi_gen']=meta.ncbi_organism_name.fillna('').str.split().str[0]
+# map each study column -> set of accessions, preferring species-level, else genus-level
+m_sp = {}
+for k,g in meta.groupby('sp_clean'): m_sp.setdefault(k,set()).update(g.accession)
+for k,g in meta.groupby('ncbi_sp'): m_sp.setdefault(k,set()).update(g.accession)
+m_gen={}
+for k,g in meta.groupby('gen_clean'): m_gen.setdefault(k,set()).update(g.accession)
+for k,g in meta.groupby('ncbi_gen'): m_gen.setdefault(k,set()).update(g.accession)
+assign={}; level={}
+for r in sp.itertuples():
+    if r.kind=='named' and r.name in m_sp: assign[r.col]=m_sp[r.name]; level[r.col]='species'
+    elif r.genus in m_gen: assign[r.col]=m_gen[r.genus]; level[r.col]='genus'
+    else: level[r.col]='none'
+need=set().union(*assign.values())
+print('columns mapped: species', sum(v=='species' for v in level.values()), 'genus', sum(v=='genus' for v in level.values()), 'none', sum(v=='none' for v in level.values()), '| genomes needed:', len(need))
+# stream KO table, keep needed genomes as presence/absence
+chunks=[]; ids=[]
+for ch in pd.read_csv(base+'ko.txt.gz', sep='\t', chunksize=2000, index_col=0):
+    ch=ch[ch.index.isin(need)]
+    if len(ch): chunks.append((ch.values>0).astype(np.uint8)); ids+=list(ch.index)
+P=np.vstack(chunks); idx={a:i for i,a in enumerate(ids)}
+print('KO matrix for needed genomes:', P.shape, 'time', round(time.time()-t0))
+cols=[c for c in sp.col if level[c]!='none']
+prof=np.vstack([P[[idx[a] for a in assign[c] if a in idx]].mean(axis=0) for c in cols])   # taxon x KO presence frequency
+# weighted Jaccard similarity
+n=len(cols); Z=np.zeros((n,n))
+for i in range(n):
+    mn=np.minimum(prof[i],prof).sum(axis=1); mx=np.maximum(prof[i],prof).sum(axis=1)
+    Z[i]=mn/np.where(mx==0,1,mx)
+np.fill_diagonal(Z,1.0)
+Zdf=pd.DataFrame(Z,index=cols,columns=cols); Zdf.to_csv(OUT_DIR+'species_similarity.csv')
+pd.DataFrame({'col':sp.col,'level':[level[c] for c in sp.col]}).to_csv(OUT_DIR+'species_similarity_mapping.csv',index=False)
+g=np.asarray(sp.set_index('col').loc[cols,'genus'].tolist(),dtype=object)
+same=(g[:,None]==g[None,:])&~np.eye(n,dtype=bool); diff=g[:,None]!=g[None,:]
+print('similarity: same-genus mean %.3f, different-genus mean %.3f, overall off-diag mean %.3f, min %.3f'%(Z[same].mean(),Z[diff].mean(),Z[~np.eye(n,dtype=bool)].mean(),Z.min()))
+print('n columns in matrix:', n, 'of', len(sp))
