@@ -1,0 +1,149 @@
+# 07_make_figures.py -- Figures 1-4 and Fig. S1 of the manuscript. Reads results/*.csv, work/child_level.csv,
+# work/rank_abundance.csv and derived/species_similarity*.csv; writes figures/*.png (300 dpi), *.pdf and *.svg (vector).
+import os, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import config
+import shutil
+for f in ('forward_results.csv','hill_effects.csv','rare_taxon.csv','burden.csv','recovery.csv'): shutil.copy(os.path.join(config.RESULTS,f),os.path.join(config.WORK,f))
+os.chdir(config.WORK)
+import matplotlib; matplotlib.use('Agg'); matplotlib.rcParams['pdf.fonttype']=42; matplotlib.rcParams['svg.fonttype']='none'
+def savefig_all(fig,stem):
+    for ext in ('png','pdf','svg'): fig.savefig(f'{stem}.{ext}',bbox_inches='tight')
+import pandas as pd, numpy as np, matplotlib, json, glob
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+from matplotlib.patches import FancyBboxPatch, FancyArrowPatch
+from scipy import stats
+plt.rcParams.update({'font.family':'DejaVu Sans','font.size':8,'axes.spines.top':False,'axes.spines.right':False,'axes.linewidth':0.8,'savefig.dpi':300})
+C={'never':'#2166AC','ill':'#B2182B','post':'#E08214','grey':'#6b6b6b','green':'#1B7837'}
+d=pd.read_csv('child_level.csv'); fw=pd.read_csv('forward_results.csv'); hill=pd.read_csv('hill_effects.csv'); rare=pd.read_csv('rare_taxon.csv'); bt=pd.read_csv('burden.csv'); rt=pd.read_csv('recovery.csv'); rk=pd.read_csv('rank_abundance.csv')
+ae=pd.read_csv(config.AE_FILE,encoding='latin-1')
+N_all=len(d); N_never=int((d.grp=='never').sum()); N_ill=int((d.grp!='never').sum()); N_pre=int((d.grp=='ill by D85').sum()); N_post=int((d.grp=='first ill after D85').sum())
+d['first_day']=d.rand_no.map(ae[ae['AE Infection']==1].groupby('Randomisation No')['Study Day'].min())
+def tag(ax,t,x=-0.14,y=1.06): ax.text(x,y,t,transform=ax.transAxes,fontsize=11,fontweight='bold')
+# ======== Fig 1: framework + landscape
+fig=plt.figure(figsize=(8.6,3.9)); gs=fig.add_gridspec(1,2,width_ratios=[1.85,1],wspace=0.10)
+ax=fig.add_subplot(gs[0]); ax.axis('off'); ax.set_xlim(-0.1,10.4); ax.set_ylim(-0.45,6.3); ax.text(-0.1,6.15,'a',fontsize=11,fontweight='bold')
+fig.canvas.draw(); _rend=fig.canvas.get_renderer()
+def box(x,y,w,h,t,fc,ec='#333',fs=6.6,min_fs=5.0):
+    ax.add_patch(FancyBboxPatch((x,y),w,h,boxstyle='round,pad=0.03,rounding_size=0.12',fc=fc,ec=ec,lw=0.9))
+    tx=ax.text(x+w/2,y+h/2,t,ha='center',va='center',fontsize=fs,linespacing=1.15)
+    inv=ax.transData.inverted()
+    while fs>min_fs:                                  # shrink the text until it sits inside the box with a margin
+        bb=tx.get_window_extent(_rend).transformed(inv)
+        if bb.width<=w*0.90 and bb.height<=h*0.86: break
+        fs-=0.2; tx.set_fontsize(fs)
+    bb=tx.get_window_extent(_rend).transformed(inv); assert bb.width<=w*0.94 and bb.height<=h*0.90, f'text does not fit its box: {t!r}'
+def arr(x1,y1,x2,y2,c='#333',ls='-',rad=0.0): ax.add_patch(FancyArrowPatch((x1,y1),(x2,y2),arrowstyle='-|>',mutation_scale=10,lw=1.1,color=c,linestyle=ls,connectionstyle=f'arc3,rad={rad}',shrinkA=0,shrinkB=0))
+# row 1
+box(0.0,4.5,2.2,1.3,'Industrialised\nenvironment\n(P1: external)','#D9EAF7'); box(2.9,4.5,2.6,1.3,'Lower richness:\nfewer common and\nmid-prevalence taxa\n(P2)','#D9EAF7')
+box(6.2,4.5,2.1,1.3,'Lower functional\nredundancy\n(P3: unresolved)','#EEEEEE',ec='#999'); box(8.9,4.5,1.4,1.3,'Reduced\nresilience','#F7DAD6')
+# row 2
+box(0.0,2.35,2.6,1.1,'Dominant taxon\n(P. stercorea; P5)','#E3F1E4'); box(6.2,2.35,4.1,1.1,'Infection episode','#F7DAD6')
+# row 3
+box(3.0,0.25,4.4,1.45,'Lasting loss after illness:\nrichness and P. stercorea\nrise with time since illness','#FDE9CC')
+arr(2.2,5.15,2.9,5.15); arr(5.5,5.15,6.2,5.15,ls=(0,(3,2)),c='#777'); arr(8.3,5.15,8.9,5.15)
+arr(9.6,4.5,9.1,3.45); ax.text(8.85,3.97,'susceptibility\narm',fontsize=6.2,color=C['ill'],ha='right',va='center')
+arr(8.3,2.35,7.4,1.45,rad=-0.12); ax.text(8.45,1.7,'consequence\narm',fontsize=6.2,color='#B35806',ha='left',va='center')
+arr(3.4,1.7,3.8,4.5,c='#B35806',rad=-0.08); arr(3.0,0.95,1.3,2.35,c='#B35806',rad=0.2)
+arr(2.6,2.9,6.2,2.9,c=C['green']); ax.text(4.55,3.55,'protects against ARI\nindependent of richness',fontsize=6.0,color=C['green'],ha='center',va='center',bbox=dict(fc='white',ec='none',pad=0.8,alpha=0.9))
+ax.text(-0.1,-0.35,'Solid arrows: some support.  Dashed arrow: proposed, untested here.',fontsize=6.2,color=C['grey'])
+bx=fig.add_subplot(gs[1]); tag(bx,'b',-0.16,1.02)
+x=np.linspace(-1.5,1.8,600); x1,x2=-0.8,1.0; xm=(x1+x2)/2; a=(x2-x1)/2
+U=((x-xm)**2-a**2)**2+0.35*(x-xm)*(-1); U=U-U.min(); U=U/U.max()   # tilted double well, right basin deeper
+bx.fill_between(x,0,U,color='#E6E6E6'); bx.plot(x,U,color='#555',lw=1.4); bx.set_xlim(-1.8,2.1); bx.set_ylim(0,1.12)
+from scipy.signal import argrelextrema
+mn=argrelextrema(U,np.less)[0]; xl,xr=x[mn[0]],x[mn[-1]]; yl,yr=U[mn[0]],U[mn[-1]]
+bx.scatter([xl],[yl+0.035],s=70,color=C['ill'],zorder=5); bx.scatter([xr],[yr+0.035],s=70,color=C['never'],zorder=5)
+bx.text(xl,0.80,'Lower-richness\nshallow basin',color=C['ill'],fontsize=6.4,ha='center',va='center'); bx.text(xr,0.80,'Higher-richness\ndeep basin',color=C['never'],fontsize=6.4,ha='center',va='center')
+bx.annotate('',xy=(xl+0.55,yl+0.42),xytext=(xl+0.05,yl+0.09),arrowprops=dict(arrowstyle='-|>',color='#B35806',lw=1.2,connectionstyle='arc3,rad=-0.3')); bx.text(xl+0.63,yl+0.40,'illness',color='#B35806',fontsize=6.4,va='center')
+bx.set_xticks([]); bx.set_yticks([]); bx.set_xlabel('Community state\n(richness increases to the right)',fontsize=7.5); bx.set_ylabel('Potential (lower = more stable)',fontsize=7.5,labelpad=6)
+bx.text(0.5,-0.25,'Illustrative only; shape and positions are arbitrary\nand not fitted to data.',transform=bx.transAxes,ha='center',va='top',fontsize=6.2,color=C['grey'])
+savefig_all(fig,'Fig1_framework_landscape'); plt.close()
+# ======== Fig 2: cohort + consequence
+fig,axs=plt.subplots(2,3,figsize=(7.6,5.5),gridspec_kw={'width_ratios':[1.1,1.3,1.1]})
+ax=axs[0,0]; ax.axis('off'); ax.set_xlim(0,10); ax.set_ylim(0,10); tag(ax,'a',0.0,1.0)
+def b2(x,y,w,h,t,fc): ax.add_patch(FancyBboxPatch((x,y),w,h,boxstyle='round,pad=0.05,rounding_size=0.2',fc=fc,ec='#333',lw=0.8)); ax.text(x+w/2,y+h/2,t,ha='center',va='center',fontsize=6.3)
+b2(2.5,8.0,5,1.5,f'Day 85 samples\nn = {N_all}','#EEEEEE'); b2(0.2,4.6,3.5,1.8,f'Never ill\nn = {N_never}',C['never']+'55'); b2(5.0,4.6,4.8,1.8,f'Ill during\nfollow-up\nn = {N_ill}',C['ill']+'55')
+b2(3.0,0.4,3.1,1.8,f'First infection\nby day 85\nn = {N_pre}',C['ill']+'88'); b2(6.5,0.4,3.4,1.8,f'First infection\nafter day 85\nn = {N_post}',C['post']+'AA')
+for x1,y1,x2,y2 in [(4,8,2,6.4),(6,8,7.4,6.4),(6.5,4.6,4.6,2.2),(8.2,4.6,8.2,2.2)]: ax.add_patch(FancyArrowPatch((x1,y1),(x2,y2),arrowstyle='-|>',mutation_scale=9,lw=1,color='#333'))
+ax=axs[0,1]; tag(ax,'b'); fd=d.first_day.dropna(); ax.hist(fd,bins=np.arange(0,120,5),color=C['ill'],alpha=0.8,edgecolor='white'); ax.axvline(85,color='k',ls='--',lw=1); ax.text(87,ax.get_ylim()[1]*0.88,'Day 85\nsample',fontsize=7); ax.text(52,ax.get_ylim()[1]*0.62,f'{N_pre} before\nday 85,\n{N_post} after',fontsize=7); ax.set_xlabel('Study day of first infection'); ax.set_ylabel(f'Children (n = {N_ill})')
+ax=axs[0,2]; tag(ax,'c'); rng=np.random.default_rng(3)
+for i,(g,c) in enumerate(zip(['never','first ill after D85','ill by D85'],[C['never'],C['post'],C['ill']])):
+    v=d[d.grp==g].q0.values; ax.scatter(i+rng.uniform(-0.18,0.18,len(v)),v,s=4,color=c,alpha=0.45,lw=0); ax.errorbar(i,v.mean(),yerr=1.96*v.std()/np.sqrt(len(v)),color='k',marker='D',ms=4,capsize=3,lw=1)
+ax.set_xticks(range(3)); ax.set_xticklabels([f'Never ill\n({N_never})',f'First ill\nafter D85\n({N_post})',f'Infection\nby D85\n({N_pre})'],fontsize=6.8); ax.set_ylabel('Species richness at Day 85')
+nl=d[d.grp=='never']
+ax=axs[1,0]; tag(ax,'d'); se=[]
+for k in range(4):
+    m=(d.pre_n==k) if k<3 else (d.pre_n>=3); se.append(1.96*d[m].q0.std()/np.sqrt(m.sum()))
+ax.errorbar(range(4),bt.richness,yerr=se,fmt='o-',color=C['ill'],capsize=3,ms=4); ax.set_xticks(range(4)); ax.set_xticklabels([f'{a}\n({b})' for a,b in zip(['0','1','2','3+'],bt.n)],fontsize=6.8); ax.set_xlabel('Infections on or before day 85'); ax.set_ylabel('Species richness')
+n=rt.n.values
+ax=axs[1,1]; tag(ax,'e'); ax.errorbar(range(4),rt.richness,yerr=1.96*rt.rsd/np.sqrt(n),fmt='o-',color=C['ill'],capsize=3,ms=4); ax.axhline(nl.q0.mean(),color=C['never'],ls='--',lw=1); ax.text(3.05,nl.q0.mean()+0.5,'never ill',color=C['never'],fontsize=7,ha='right',va='bottom')
+ax.set_xticks(range(4)); ax.set_xticklabels([f'{a}\n({b})' for a,b in zip(['ongoing','1-14','15-42','>42'],rt.n)],fontsize=6.8); ax.set_xlabel('Days since last episode ended'); ax.set_ylabel('Species richness')
+ax=axs[1,2]; tag(ax,'f'); ax.errorbar(range(4),rt.lps,yerr=1.96*rt.lsd/np.sqrt(n),fmt='o-',color=C['green'],capsize=3,ms=4); ax.axhline(nl.lps.mean(),color=C['never'],ls='--',lw=1); ax.text(3.05,nl.lps.mean()+0.05,'never ill',color=C['never'],fontsize=7,ha='right',va='bottom')
+ax.set_xticks(range(4)); ax.set_xticklabels([f'{a}\n({b})' for a,b in zip(['ongoing','1-14','15-42','>42'],rt.n)],fontsize=6.8); ax.set_xlabel('Days since last episode ended'); ax.set_ylabel('log(count + 1) P. stercorea')
+fig.tight_layout(); savefig_all(fig,'Fig2_cohort_consequence'); plt.close()
+# ======== Fig 3: Hill, forward, anatomy
+fig,axs=plt.subplots(2,2,figsize=(7.6,6.0))
+ax=axs[0,0]; tag(ax,'a'); ax.axvline(0,color='#999',lw=0.8); y=0; yt=[]; yl=[]
+for lab,c in [('whole-follow-up: never ill vs all ill',C['ill']),('strict forward: never ill vs first ill after D85',C['post'])]:
+    for q,ql in [('q0','q = 0 (richness)'),('q1','q = 1 (exp Shannon)'),('q2','q = 2 (inv. Simpson)')]:
+        r=hill[(hill.contrast==lab)&(hill.measure==q)].iloc[0]; ax.errorbar(r.d,y,xerr=[[r.d-r.lo],[r.hi-r.d]],fmt='o',color=c,capsize=2,ms=4,lw=1.1); yt.append(y); yl.append(ql); y-=1
+    y-=0.6
+ax.set_yticks(yt); ax.set_yticklabels(yl,fontsize=7); ax.set_xlabel("Cohen's d (positive = lower in ill)"); ax.text(0.02,0.99,'Never vs all ill',transform=ax.transAxes,fontsize=6.8,color=C['ill'],va='top'); ax.text(0.02,0.50,'Never vs first ill after D85',transform=ax.transAxes,fontsize=6.8,color=C['post'],va='top')
+ax=axs[0,1]; tag(ax,'b'); ax.axvline(1,color='#999',lw=0.8); y=0; yt=[]; yl=[]
+for oc,ocl in [('AE Infection','Any infection'),('AE Fever','Fever'),('AE ARI','ARI'),('AE Diarrhoea','Diarrhoea')]:
+    for q in ['q0','q1','q2']:
+        r=fw[(fw.outcome==oc)&(fw.exposure==q)].iloc[0]; ax.errorbar(r.RR_per_SD,y,xerr=[[r.RR_per_SD-r.lo],[r.hi-r.RR_per_SD]],fmt='s',color=C['never'],capsize=2,ms=3.5,lw=1.1); yt.append(y); yl.append(f'{ocl}, q = {q[1]}'); y-=1
+    y-=0.4
+ax.set_yticks(yt); ax.set_yticklabels(yl,fontsize=6.5); ax.set_xscale('log'); ax.set_xticks([0.4,0.6,0.8,1,1.5]); ax.set_xticklabels(['0.4','0.6','0.8','1','1.5']); ax.set_xlabel('Rate ratio per SD, post-day-85 episodes')
+ax=axs[1,0]; tag(ax,'c')
+for g,c,l in [('never',C['never'],'Never ill'),('ill',C['ill'],'Ill')]:
+    r=rk[rk.group==g]; ax.plot(r['rank'],r['mean']*100,color=c,lw=1.3,label=l)
+ax.set_yscale('log'); ax.set_xlabel('Species rank within child'); ax.set_ylabel('Mean relative abundance (%)'); ax.legend(frameon=False,fontsize=7)
+ax=axs[1,1]; tag(ax,'d'); ax.axvline(0,color='#999',lw=0.8); labs=['Total richness','Common (>=50% of samples)','Intermediate (10-50%)','Rare (<10%)','Without 5 most abundant','Without P. stercorea','Named species','Unnamed sp./genus-only']
+for i,(lab,r) in enumerate(zip(labs,rare.itertuples())):
+    c=C['ill'] if r.var=='q0' else (C['grey'] if r.p>0.05 else C['never']); ax.errorbar(r.d,-i,xerr=[[r.d-r.lo],[r.hi-r.d]],fmt='o',color=c,capsize=2,ms=4)
+ax.set_yticks(-np.arange(len(labs))); ax.set_yticklabels(labs,fontsize=6.8); ax.set_xlabel("Cohen's d (never ill minus ill, richness)")
+fig.tight_layout(); savefig_all(fig,'Fig3_richness_forward_anatomy'); plt.close()
+
+import pandas as pd, numpy as np, matplotlib, re, json, glob
+matplotlib.use('Agg'); import matplotlib.pyplot as plt
+from scipy import stats
+plt.rcParams.update({'font.family':'DejaVu Sans','font.size':8,'axes.spines.top':False,'axes.spines.right':False,'axes.linewidth':0.8,'savefig.dpi':300})
+C={'never':'#2166AC','ill':'#B2182B','grey':'#6b6b6b'}
+d=pd.read_csv('child_level.csv'); fw=pd.read_csv('forward_results.csv')
+Z=pd.read_csv(os.path.join(config.DERIVED,'species_similarity.csv'),index_col=0); m=pd.read_csv(os.path.join(config.DERIVED,'species_similarity_mapping.csv'))
+genus=np.array([re.split('_',c)[0] for c in Z.index]); n=len(Z); iu=np.triu_indices(n,1); same=(genus[:,None]==genus[None,:])[iu]; v=Z.values[iu]
+fig=plt.figure(figsize=(8.4,5.6)); gs=fig.add_gridspec(2,15,height_ratios=[1,1],hspace=0.55,wspace=3.4)
+def tag(ax,t,x=-0.16,y=1.06): ax.text(x,y,t,transform=ax.transAxes,fontsize=11,fontweight='bold')
+ax=fig.add_subplot(gs[0,0:9]); tag(ax,'a',-0.1)
+ax.hist(v[~same],bins=40,alpha=0.7,color=C['never'],density=True,label=f'Different genus (mean {v[~same].mean():.2f})'); ax.hist(v[same],bins=40,alpha=0.7,color=C['ill'],density=True,label=f'Same genus (mean {v[same].mean():.2f})')
+ax.text(0.99,0.62,'pairs sharing a\ngenus-level profile',transform=ax.transAxes,fontsize=6.5,ha='right',color=C['ill']); ax.set_xlabel('Gene-content similarity between species pairs (weighted Jaccard of KO profiles)'); ax.set_ylabel('Density'); ax.legend(frameon=False,fontsize=7)
+ax=fig.add_subplot(gs[0,10:15]); tag(ax,'b',-0.3); c=m.level.value_counts()
+ax.bar(['Species\nmatch','Genus\nmatch','Unmapped'],[c.get('species',0),c.get('genus',0),c.get('none',0)],color=['#1B7837','#E08214','#999999']); ax.set_ylabel(f'Study species (n = {int(c.sum())})')
+for i,k in enumerate(['species','genus','none']): ax.text(i,c.get(k,0)+5,str(int(c.get(k,0))),ha='center',fontsize=7)
+for i,q in enumerate([0,1,2]):
+    ax=fig.add_subplot(gs[1,i*3:(i+1)*3-0]); tag(ax,'cde'[i],-0.3); ax.scatter(d.q0,d[f'red{q}'],s=3,color=C['grey'],alpha=0.4,lw=0); rho=stats.spearmanr(d.q0,d[f'red{q}']).correlation
+    ax.set_xlabel('Richness'); ax.set_ylabel(f'Redundancy, q = {q}'); ax.text(0.5,0.04,f'rho = {rho:.2f}',transform=ax.transAxes,fontsize=7.5,ha='center',bbox=dict(fc='white',ec='none',alpha=0.8))
+ax=fig.add_subplot(gs[1,11:15]); tag(ax,'f',-0.62); ax.axvline(1,color='#999',lw=0.8); y=0; yt=[]; yl=[]
+for oc,ocl in [('AE Infection','Any infection'),('AE ARI','ARI'),('AE Diarrhoea','Diarrhoea'),('AE Fever','Fever')]:
+    for q in [1,2]:
+        r=fw[(fw.outcome==oc)&(fw.exposure==f'red{q} | richness')].iloc[0]; ax.errorbar(r.RR_per_SD,y,xerr=[[r.RR_per_SD-r.lo],[r.hi-r.RR_per_SD]],fmt='s',color=C['never'],capsize=2,ms=3.2,lw=1); yt.append(y); yl.append(f'{ocl}, q = {q}'); y-=1
+    y-=0.4
+ax.set_yticks(yt); ax.set_yticklabels(yl,fontsize=6); ax.set_xscale('log'); ax.set_xticks([0.4,0.6,1,1.5,2]); ax.set_xticklabels(['0.4','0.6','1','1.5','2'],fontsize=6.5); ax.set_xlabel('Rate ratio per SD\n(redundancy, given richness)',fontsize=6.8)
+savefig_all(fig,'Fig4_redundancy'); plt.close()
+
+
+# ---------- Fig S1 robustness
+import numpy as np, matplotlib.pyplot as plt, pandas as pd
+rob=pd.read_csv(os.path.join(config.RESULTS,'richness_robustness_or.csv'))
+fig,ax=plt.subplots(figsize=(5.2,2.2)); ax.axvline(1,color='#999',lw=0.8)
+for i,r in enumerate(rob.itertuples()): ax.errorbar(r.OR,-i,xerr=[[r.OR-r.lo],[r.hi-r.OR]],fmt='o',color='#B2182B',capsize=2,ms=4)
+ax.set_yticks(-np.arange(len(rob))); ax.set_yticklabels(['Unadjusted\n(n = %d)'%rob.n[0],'Adjusted\n(n = %d)'%rob.n[1],'Adjusted, rarefied to\n10,000 counts','Adjusted, species in\n<5% of samples removed'],fontsize=6.8)
+ax.set_xlabel('Odds ratio of any infection per additional species'); ax.set_xlim(0.97,1.005)
+fig.tight_layout(); savefig_all(fig,'FigS1_robustness'); plt.close()
+
+for stem in ('Fig1_framework_landscape','Fig2_cohort_consequence','Fig3_richness_forward_anatomy','Fig4_redundancy','FigS1_robustness'):
+    for ext in ('png','pdf','svg'): shutil.copy(f'{stem}.{ext}',os.path.join(config.FIGURES,f'{stem}.{ext}'))
+print('figures written to',config.FIGURES)
