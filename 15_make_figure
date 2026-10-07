@@ -1,0 +1,9 @@
+# 15_make_figure.py -- AUC comparison figure used in the report. Reads out/prediction.csv, writes out/auc.png
+import os,sys; sys.path.insert(0,os.path.dirname(os.path.abspath(__file__))); import config
+import pandas as pd, numpy as np, matplotlib; matplotlib.use('Agg'); import matplotlib.pyplot as plt
+p=pd.read_csv('out/prediction.csv'); an=list(dict.fromkeys(p.analysis)); lab=['D1 → any infection','D15 → any infection','D85 ↔ ever ill','D85 → post-D85 infection']
+mods=['base','base+richness','base+richness+network','base+richness+10 CLR PCs']; cols=['#bbb','#4a7','#d73','#47a']
+fig,ax=plt.subplots(figsize=(7.5,3.6)); w=0.2
+for i,m in enumerate(mods):
+    ax.bar(np.arange(4)+i*w,[p[(p.analysis==a)&(p.model==m)].auc.iloc[0] for a in an],w,label=m.replace('base+','+ '),color=cols[i])
+ax.axhline(0.5,color='k',lw=.6,ls='--'); ax.set_ylim(0.45,0.75); ax.set_xticks(np.arange(4)+1.5*w); ax.set_xticklabels(lab,fontsize=8); ax.set_ylabel('Cross-validated AUC'); ax.legend(fontsize=7,ncol=2,frameon=False); plt.tight_layout(); plt.savefig('out/auc.png',dpi=200)
