@@ -1,0 +1,35 @@
+# 09_asv_replication.R -- independent replication of the Day 85 richness-infection association with the R1-only ASV table
+# (vsearch pipeline, first 10,000 R1 reads per sample, 99% identity mapping, no taxonomy). The ASV table was built separately
+# from the species table used elsewhere, so agreement is a check on assignment and pipeline choices, not on sampling.
+# Richness is the expected number of ASVs in a random subsample of n reads (analytic rarefaction, no random numbers).
+# Needs: r1only_asv_counts.tsv (and optionally r1only_manifest_used.tsv) on the Desktop; work/child_level.csv from step 04.
+# Outputs: results/asv_replication.csv, results/asv_vs_species_richness.csv
+suppressMessages({library(tidyverse);library(broom)})
+.args <- commandArgs(FALSE); .f <- sub("--file=", "", .args[grep("--file=", .args)])
+SCRIPT_DIR <- if (length(.f)) dirname(normalizePath(.f, winslash = "/")) else if (file.exists("config.R")) normalizePath(getwd(), winslash = "/") else if (file.exists(file.path("scripts", "config.R"))) normalizePath(file.path(getwd(), "scripts"), winslash = "/") else stop("Set the working directory to the package folder or its scripts folder.")
+source(file.path(SCRIPT_DIR, "config.R")); source(file.path(SCRIPT_DIR, "fr_helpers.R"))
+if (is.na(ASV_COUNTS)) { message("r1only_asv_counts.tsv not found: step 09 skipped (optional)."); quit(save = "no") }
+asv <- read_tsv(ASV_COUNTS, show_col_types = FALSE, progress = FALSE)
+M <- as.matrix(asv[, -1]); rownames(M) <- asv$ASV_ID; M[is.na(M)] <- 0
+depth <- colSums(M); samples <- colnames(M); rand_no <- sub("_D85$", "", samples)
+cat(sprintf("ASV table: %d ASVs x %d samples; median mapped reads %.0f; %d samples with no mapped reads\n", nrow(M), ncol(M), median(depth), sum(depth == 0)))
+rare_exp <- function(x, n) { N <- sum(x); if (N < n) return(NA_real_); x <- x[x > 0]; sum(1 - exp(lchoose(N - x, n) - lchoose(N, n))) }
+shannon <- function(x) { p <- x[x > 0] / sum(x); -sum(p * log(p)) }
+cl <- read_csv(file.path(WORK, "child_level.csv"), show_col_types = FALSE) %>% mutate(rand_no = as.character(rand_no))
+covs <- "age_enrolment + gender_n + HAZ_enrolment + iron_arm + season + location"
+out <- list(); cmp <- list()
+for (n in c(3000, 5000, 7000)) {
+  a <- tibble(rand_no = rand_no, depth = depth, asv_rich = apply(M, 2, rare_exp, n = n), asv_shannon = apply(M, 2, shannon)) %>% filter(!is.na(asv_rich)) %>% inner_join(cl, by = "rand_no")
+  a$ill <- as.integer(a$grp != "never"); a$z <- as.numeric(scale(a$asv_rich))
+  nv <- a$asv_rich[a$ill == 0]; il <- a$asv_rich[a$ill == 1]
+  sp <- sqrt(((length(nv) - 1) * var(nv) + (length(il) - 1) * var(il)) / (length(nv) + length(il) - 2))
+  m1 <- glm(as.formula(paste("ill ~ z +", covs)), family = binomial, data = a); s1 <- summary(m1)$coefficients["z", ]
+  m2 <- glm(as.formula(paste("post_n ~ z + pre_n + I(since <= 14 & !is.na(since)) +", covs)), family = quasipoisson, data = a, mustart = pmax(a$post_n, 0.1)); s2 <- summary(m2)$coefficients["z", ]
+  out[[length(out) + 1]] <- tibble(rarefied_to = n, n_children = nrow(a), n_never = length(nv), n_ill = length(il),
+    mean_never = mean(nv), mean_ill = mean(il), cohen_d_never_minus_ill = (mean(nv) - mean(il)) / sp, welch_p = t.test(nv, il)$p.value,
+    OR_infection_per_SD = exp(s1[1]), OR_lo = exp(s1[1] - 1.96 * s1[2]), OR_hi = exp(s1[1] + 1.96 * s1[2]), p_adjusted = s1[4],
+    RR_post_sampling_per_SD = exp(s2[1]), RR_lo = exp(s2[1] - 1.96 * s2[2]), RR_hi = exp(s2[1] + 1.96 * s2[2]), p_post = s2[4])
+  if (n == 5000) cmp[[1]] <- tibble(n_children = nrow(a), spearman_asv_vs_species_richness = cor(a$asv_rich, a$q0, method = "spearman"), spearman_asv_vs_species_q1 = cor(a$asv_rich, a$q1, method = "spearman"))
+}
+res <- bind_rows(out); write_csv(res, file.path(RESULTS, "asv_replication.csv")); write_csv(bind_rows(cmp), file.path(RESULTS, "asv_vs_species_richness.csv"))
+print(as.data.frame(res %>% mutate(across(where(is.numeric), ~signif(.x, 3)))), row.names = FALSE); print(bind_rows(cmp))
