@@ -1,0 +1,30 @@
+# 10_build_child_level.py -- rebuilds the D85 child-level table (grp, burden, recency, Hill q0-2) from mb_full.rds + AE file.
+import os,sys; sys.path.insert(0,os.path.dirname(os.path.abspath(__file__))); import config
+import pyreadr, pandas as pd, numpy as np, re
+mb=pyreadr.read_r(config.MB_RDS)[None]
+sp=[c for c in mb.columns[12:] if re.search(r'_(<?[0-9.]+)$',c)]
+assert len(sp)==488
+mb[sp]=mb[sp].fillna(0)
+ae=pd.read_csv(config.AE_CSV,encoding='latin1')
+ae=ae.rename(columns={'Randomisation No':'rand_no','Study Day':'sdy'})
+ae['s']=pd.to_datetime(ae['Start date'],dayfirst=True,errors='coerce'); ae['e']=pd.to_datetime(ae['End date'],dayfirst=True,errors='coerce')
+ae['dur']=(ae.e-ae.s).dt.days+1
+inf=ae[ae['AE Infection']==1].copy(); inf['endd']=inf.sdy+inf.dur-1
+pre=inf[inf.sdy<=85].groupby('rand_no').agg(pre_n=('sdy','size'),last_end=('endd','max')).reset_index()
+post=inf[inf.sdy>85].groupby('rand_no').size().rename('post_n').reset_index()
+d=mb[(mb.timepoints=='D85')&mb.Ill_binary.notna()].copy()
+d=d.merge(pre,on='rand_no',how='left').merge(post,on='rand_no',how='left')
+d['pre_n']=d.pre_n.fillna(0).astype(int); d['post_n']=d.post_n.fillna(0).astype(int); d['since']=85-d.last_end
+d['grp']=np.where((d.pre_n==0)&(d.post_n==0),'never',np.where(d.pre_n==0,'first ill after D85','ill by D85'))
+X=d[sp].values
+d['q0']=(X>0).sum(1)
+p=X/X.sum(1,keepdims=True)
+with np.errstate(all='ignore'):
+    H=-np.nansum(np.where(p>0,p*np.log(p),0),1)
+d['q1']=np.exp(H); d['q2']=1/(p**2).sum(1)
+d['depth']=np.log(X.sum(1))
+print(d.grp.value_counts().to_dict())
+print('richness never/ill', d[d.grp=='never'].q0.mean().round(2), d[d.grp!='never'].q0.mean().round(2))
+d.to_pickle('d85.pkl'); mb.to_pickle('mb.pkl'); pd.Series(sp).to_pickle('sp.pkl')
+print(d[['age_enrolment','gender_n','HAZ_enrolment','iron_arm','season','location']].describe(include='all').T)
+print(mb.groupby('timepoints')[sp].sum().sum(axis=1))
