@@ -1,0 +1,63 @@
+# 13_group_states_transitions.py -- never-ill vs ill network comparison (size- and richness-matched, label-permutation null), community states, dip tests, within-child transitions.
+import os,sys; sys.path.insert(0,os.path.dirname(os.path.abspath(__file__))); import config
+exec(config.read('common.py'))
+from netlib import *
+import json, diptest, statsmodels.formula.api as smf
+from scipy import stats
+from sklearn.decomposition import PCA
+from sklearn.mixture import GaussianMixture
+from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_score
+rng=np.random.default_rng(11)
+A,pcm,spk2,modid,alpha=pd.read_pickle('net.pkl'); R={}
+d=d.reset_index(drop=True)
+# ===== 1. group networks never vs ill (n matched), +richness-matched
+nv=np.where(d.grp=='never')[0]; il=np.where(d.grp!='never')[0]; n=len(nv)
+def st(idx): return netstats(fit(C[idx],alpha)[0])
+obs_nv=st(nv)
+def match_ill():
+    pool=list(il); out=[]
+    for i in nv[rng.permutation(len(nv))]:
+        j=min(pool,key=lambda k:abs(d.q0[k]-d.q0[i])); out.append(j); pool.remove(j)
+    return np.array(out)
+ill_runs=[st(rng.choice(il,n,replace=False)) for _ in range(15)]
+mt=match_ill(); obs_mt=st(mt)
+print('richness never/ill/matched-ill',d.q0[nv].mean(),d.q0[il].mean(),d.q0[mt].mean())
+null=[]
+allidx=np.arange(len(d))
+for _ in range(60):
+    p=rng.permutation(allidx); a,b=st(p[:n]),st(p[n:2*n]); null.append({k:a[k]-b[k] for k in a})
+null=pd.DataFrame(null); rows=[]
+for k in obs_nv:
+    o=obs_nv[k]-np.mean([r[k] for r in ill_runs]); om=obs_nv[k]-obs_mt[k]
+    rows.append(dict(metric=k,never=obs_nv[k],ill_mean_subsamples=np.mean([r[k] for r in ill_runs]),diff=o,perm_p=(1+(np.abs(null[k])>=abs(o)).sum())/101,
+                     ill_richness_matched=obs_mt[k],diff_matched=om,perm_p_matched=(1+(np.abs(null[k])>=abs(om)).sum())/101,null_sd=null[k].std()))
+GN=pd.DataFrame(rows); GN.to_csv('out/group_networks.csv',index=False); print(GN.round(3).to_string())
+# ===== 2. community states
+Z=PCA(10,random_state=0).fit(C); P=Z.transform(C); print('PC var',Z.explained_variance_ratio_[:5].round(3))
+bic={k:GaussianMixture(k,covariance_type='diag',n_init=5,random_state=0).fit(P).bic(P) for k in range(1,8)}
+sil={k:silhouette_score(P,KMeans(k,n_init=10,random_state=0).fit_predict(P)) for k in range(2,8)}
+pcol=spk.index('Prevotella_copri_35.15'); psi=spk.index('Prevotella_stercorea_7.05')
+dips={nm:diptest.diptest(v) for nm,v in {'PC1':P[:,0],'PC2':P[:,1],'P. copri CLR':C[:,pcol],'P. stercorea CLR':C[:,psi],'richness':d.q0.values.astype(float)}.items()}
+dip=pd.DataFrame([dict(variable=k,dip=v[0],p=v[1]) for k,v in dips.items()]); dip.to_csv('out/dip_tests.csv',index=False); print(dip.round(4)); print('BIC',{k:round(v) for k,v in bic.items()},'sil',{k:round(v,3) for k,v in sil.items()})
+kbest=min(bic,key=bic.get); ks=max(sil,key=sil.get); k=ks if ks>=2 else 2
+lab=KMeans(k,n_init=20,random_state=0).fit_predict(P); d['state']=lab
+tab=d.groupby('state').agg(n=('q0','size'),richness=('q0','mean'),copri=('Prevotella_copri_35.15',lambda x:np.log1p(x).mean()),ever_ill=('ever_ill','mean'),post_any=('post_any','mean'),pre_n=('pre_n','mean')).reset_index()
+print(tab.round(3).to_string())
+chi=[stats.chi2_contingency(pd.crosstab(d.state,d[o]))[1] for o in ('ever_ill','post_any')]; print('chi2 p ever_ill,post_any',chi)
+tab.to_csv('out/states.csv',index=False); R['states']=dict(k=int(k),bic_best_k=int(kbest),chi_p_ever=chi[0],chi_p_post=chi[1],silhouette=sil)
+# ===== 3. transitions (within-child Aitchison distances)
+mbC=np.log(mb[sp].values.astype(float)+0.5); mbC=mbC-mbC.mean(1,keepdims=True); mbC=pd.DataFrame(mbC,index=mb.index); mbC['rand_no']=mb.rand_no.values; mbC['tp']=mb.timepoints.values
+wide={tp:mbC[mbC.tp==tp].drop_duplicates('rand_no').set_index('rand_no').drop(columns='tp') for tp in ('D1','D15','D85')}
+grpmap=d.set_index('rand_no').grp; rows=[]
+for a,b in (('D1','D15'),('D15','D85'),('D1','D85')):
+    ids=wide[a].index.intersection(wide[b].index).intersection(grpmap.index)
+    dist=np.linalg.norm(wide[a].loc[ids].values-wide[b].loc[ids].values,axis=1)
+    # between-child reference: distance to a random other child's later sample
+    perm=rng.permutation(len(ids)); ref=np.linalg.norm(wide[a].loc[ids].values-wide[b].loc[ids].values[perm],axis=1)
+    g=grpmap.loc[ids].values; nvd=dist[g=='never']; ild=dist[g!='never']
+    rows.append(dict(pair=f'{a}->{b}',n=len(ids),within_child_median=np.median(dist),between_child_median=np.median(ref),individuality_ratio=np.median(dist)/np.median(ref),
+                     never_median=np.median(nvd),ill_median=np.median(ild),n_never=len(nvd),MWU_p=stats.mannwhitneyu(nvd,ild).pvalue))
+TR=pd.DataFrame(rows); TR.to_csv('out/transitions.csv',index=False); print(TR.round(3).to_string())
+
+json.dump(R,open('out/results_states.json','w'),indent=1,default=float)
