@@ -2,7 +2,7 @@ This repository contains analysis code, processed data summaries, figures, and s
 
 **Ofordile ON.**
 
-**Does the gut microbial richness lost with industrialisation matter for infection? (scripts 00–09).**
+**Does gut microbial richness lost with industrialisation matter for infection? A two-direction test in Gambian toddlers (scripts 00–09).**
 
 The project tests whether lower gut microbial richness is associated with greater infection susceptibility, using longitudinal data from Gambian toddlers and a two-direction analysis of illness and subsequent infection.
 
