@@ -1,0 +1,15 @@
+# 00_record_input_checksums.py -- records which input files were used and their SHA-256 checksums (no downloads).
+# Output: results/input_files_sha256.csv
+import os, sys, csv, hashlib
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import config
+def sha256(path):
+    h = hashlib.sha256()
+    with open(path, 'rb') as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b''): h.update(chunk)
+    return h.hexdigest()
+with open(os.path.join(config.RESULTS, 'input_files_sha256.csv'), 'w', newline='') as fh:
+    w = csv.writer(fh); w.writerow(['file', 'sha256'])
+    for p in (config.MB_FULL, config.SPECIES, config.AE_FILE, config.ASV_COUNTS, config.ASV_MANIFEST):
+        if p: w.writerow([p, sha256(p)])
+print('wrote', os.path.join(config.RESULTS, 'input_files_sha256.csv'))
