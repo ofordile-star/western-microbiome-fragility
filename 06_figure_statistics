@@ -1,0 +1,45 @@
+# 06_figure_statistics.py -- effect sizes for Hill orders, species-subset anatomy, burden and recovery tables,
+# and richness-redundancy correlations. Reads work/child_level.csv; writes results/*.csv.
+import os, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import config
+import shutil
+os.chdir(config.WORK)
+import pandas as pd, numpy as np, json
+from scipy import stats
+d=pd.read_csv('child_level.csv')
+cc=pd.read_csv(os.path.join(config.RESULTS,'species_class_counts.csv')).set_index('class').n
+def dci(a,b):  # Cohen d (b - a) with approx 95% CI
+    n1,n2=len(a),len(b); sp=np.sqrt(((n1-1)*a.var()+(n2-1)*b.var())/(n1+n2-2)); dd=(b.mean()-a.mean())/sp
+    se=np.sqrt((n1+n2)/(n1*n2)+dd**2/(2*(n1+n2))); return dd, dd-1.96*se, dd+1.96*se
+never=d[d.grp=='never']; ill=d[d.grp!='never']; fa=d[d.grp=='first ill after D85']; pre=d[d.grp=='ill by D85']
+out={}
+rows=[]
+for q in ['q0','q1','q2']:
+    for lab,g in [('whole-follow-up: never ill vs all ill',ill),('strict forward: never ill vs first ill after D85',fa),('never ill vs ill by D85',pre)]:
+        dd,lo,hi=dci(g[q],never[q]); p=stats.ttest_ind(g[q],never[q],equal_var=False).pvalue
+        rows.append(dict(contrast=lab,measure=q,mean_never=never[q].mean(),mean_ill=g[q].mean(),d=dd,lo=lo,hi=hi,p=p,n_ill=len(g)))
+hill=pd.DataFrame(rows); hill.to_csv('hill_effects.csv',index=False); print(hill.round(3).to_string(index=False))
+# rare-taxon anatomy
+rows=[]
+for v,lab in [('q0','Total richness'),('rich_common',f"Common species (>=50% of samples; n={cc['common']})"),('rich_intermediate',f"Intermediate (10-50%; n={cc['intermediate']})"),('rich_rare',f"Rare (<10%; n={cc['rare']})"),('rich_noTop5','Richness without 5 most abundant species'),('rich_noPs','Richness without P. stercorea'),('rich_named',f"Named species (n={cc['named']})"),('rich_unnamed',f"Unnamed sp./genus-only (n={cc['unnamed']})")]:
+    dd,lo,hi=dci(ill[v],never[v]); p=stats.ttest_ind(ill[v],never[v],equal_var=False).pvalue
+    rows.append(dict(measure=lab,var=v,mean_never=never[v].mean(),mean_ill=ill[v].mean(),d=dd,lo=lo,hi=hi,p=p))
+rare=pd.DataFrame(rows); 
+
+p=rare.p.values; o=np.argsort(p); n=len(p); q=np.empty(n); prev=1.0
+for rank,i in list(enumerate(o,1))[::-1]:
+    prev=min(prev,p[i]*n/rank); q[i]=prev
+rare['q_BH']=q; rare.to_csv('rare_taxon.csv',index=False); print(); print(rare.round(3).to_string(index=False))
+# dose-response and recovery
+d['burden']=pd.cut(d.pre_n,[-1,0,1,2,10],labels=['0','1','2','3+'])
+bt=d.groupby('burden',observed=True).agg(n=('q0','size'),richness=('q0','mean'),lps=('lps','mean')).reset_index(); bt.to_csv('burden.csv',index=False); print(); print(bt.round(2).to_string(index=False))
+r=d[d.pre_n>0].copy(); r['rec']=pd.cut(r.since,[-100,0,14,42,100],labels=['ongoing/at sample','1-14 d','15-42 d','>42 d'])
+rt=r.groupby('rec',observed=True).agg(n=('q0','size'),richness=('q0','mean'),rsd=('q0','std'),lps=('lps','mean'),lsd=('lps','std')).reset_index(); rt.to_csv('recovery.csv',index=False); print(); print(rt.round(2).to_string(index=False))
+# correlations richness-redundancy
+for q in [0,1,2]: print('spearman q',q, round(stats.spearmanr(d.q0,d[f'red{q}']).correlation,2))
+
+# richness-redundancy correlations
+cor=pd.DataFrame([{'order':q,'spearman_rho_richness_vs_redundancy':stats.spearmanr(d.q0,d[f'red{q}']).correlation} for q in (0,1,2)])
+cor.to_csv('redundancy_correlations.csv',index=False); print(cor.round(3).to_string(index=False))
+for f in ('hill_effects.csv','rare_taxon.csv','burden.csv','recovery.csv','redundancy_correlations.csv'): shutil.copy(f,os.path.join(config.RESULTS,f))
