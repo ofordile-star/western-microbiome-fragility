@@ -1,0 +1,135 @@
+# 02_main_models.R -- pre-specified analysis (plan dated 1 October 2026): Hill-number diversity, inferred redundancy,
+# whole-follow-up negative binomial models (M1-M3, quasi-Poisson refits), event timing, and richness robustness checks.
+# Outputs: results/FR_model_results.csv, results/FR_event_timing.csv
+library(tidyverse)
+library(MASS)       # glm.nb
+library(broom)
+library(lubridate)
+.args <- commandArgs(FALSE); .f <- sub("--file=", "", .args[grep("--file=", .args)])
+SCRIPT_DIR <- if (length(.f)) dirname(normalizePath(.f, winslash = "/")) else if (file.exists("config.R")) normalizePath(getwd(), winslash = "/") else if (file.exists(file.path("scripts", "config.R"))) normalizePath(file.path(getwd(), "scripts"), winslash = "/") else stop("Set the working directory to the package folder or its scripts folder.")
+source(file.path(SCRIPT_DIR, "config.R")); source(file.path(SCRIPT_DIR, "fr_helpers.R"))
+rds_dir <- DATA_DIR; out_dir <- RESULTS; ae_path <- AE_FILE; sim_path <- SIM_FILE
+d85_study_day <- 85   # D85 sample = study day 85 (age_sampling - age_enrolment is constant)
+min_events    <- 20   # floor for any post-D85 model; counts are reported regardless
+
+# ---- 1. LOAD ---------------------------------------------------------------
+mb           <- readRDS(file.path(rds_dir, "mb_full.rds"))
+species_cols <- readRDS(file.path(rds_dir, "species_cols.rds"))
+
+d85 <- mb %>% filter(timepoints == "D85", !is.na(Ill_binary))
+X   <- as.matrix(d85[, species_cols]); X[is.na(X)] <- 0
+
+# ---- 2. EXPOSURES (species-level; richness here == published `richness`) ----
+d85$rich_q0   <- apply(X, 1, hill, q = 0)
+d85$hill_q1   <- apply(X, 1, hill, q = 1)
+d85$hill_q2   <- apply(X, 1, hill, q = 2)
+d85$depth_asg <- rowSums(X)                      # assigned counts, NOT true sequencing depth
+stopifnot(all(d85$rich_q0 == d85$richness, na.rm = TRUE))   # sanity: matches published column
+d85$rich_rare <- apply(X, 1, rarefy_richness, n = 10000)
+d85$rich_filt <- apply(X[, colMeans(X > 0) >= 0.05, drop = FALSE], 1, hill, q = 0)  # prevalence >= 5%
+cat(sprintf("n D85 = %d; corr(rarefied, published richness) = %.3f\n",
+            nrow(d85), cor(d85$rich_rare, d85$richness, use = "complete.obs", method = "spearman")))
+
+# ---- 3. REDUNDANCY (needs a species x species similarity matrix) -----------
+have_sim <- file.exists(sim_path)
+d85$log_Pstercorea <- log1p(d85[["Prevotella_stercorea_7.05"]])   # as in Fig 7 (log[count + 1])
+if (have_sim) {
+  Z <- as.matrix(read.csv(sim_path, row.names = 1, check.names = FALSE))
+  sp_use <- intersect(species_cols, rownames(Z))              # species with genome-based profiles
+  Z  <- Z[sp_use, sp_use]
+  stopifnot(!anyNA(Z), all(abs(diag(Z) - 1) < 1e-9))
+  Xm <- X[, sp_use, drop = FALSE]
+  d85$share_mapped <- rowSums(Xm) / rowSums(X)                 # share of counts covered by the matrix
+  cat(sprintf("Species in matrix: %d of %d; median share of counts covered: %.3f\n",
+              length(sp_use), length(species_cols), median(d85$share_mapped)))
+  for (q in 0:2) d85[[paste0("red_q", q)]] <- apply(Xm, 1, redundancy_ratio, Z = Z, q = q)
+  print(sapply(0:2, function(q) cor(d85$rich_q0, d85[[paste0("red_q", q)]], method = "spearman", use = "complete.obs")))
+} else message("No similarity matrix found: redundancy models skipped (Route A/B inputs missing).")
+
+# ---- 4. OUTCOMES (event-level file, Fig7 conventions) ----------------------
+ae <- read_csv(ae_path, locale = locale(encoding = "latin1"), show_col_types = FALSE) %>%
+  mutate(StartDate = dmy(`Start date`), EndDate = dmy(`End date`))
+stopifnot(all(c("Study Day", "AE Infection") %in% names(ae)))
+cnt <- function(df) df %>% group_by(`Randomisation No`) %>% summarise(n = n(), .groups = "drop")
+out_list <- list(
+  ARI              = ae %>% filter(`AE ARI` == 1),
+  Diarrhoea        = ae %>% filter(`AE Diarrhoea` == 1),
+  All_illness      = ae %>% filter(`AE Infection` == 1),                       # matches Ill_binary
+  Illness_exARI    = ae %>% filter(`AE Infection` == 1 & !(`AE ARI` %in% 1))   # CONFIRM definition
+)
+for (nm in names(out_list)) {
+  tmp <- cnt(out_list[[nm]]); names(tmp) <- c("rand_no", nm)
+  d85 <- d85 %>% left_join(tmp, by = "rand_no") %>% mutate(!!nm := replace_na(.data[[nm]], 0L))
+}
+print(colSums(d85[names(out_list)] > 0))  # children with >= 1 event per outcome
+
+# ---- 5. MODELS (negative binomial; cap at <= 5 events as in Fig2) ----------
+covs <- "age_enrolment + gender_n + HAZ_enrolment + iron_arm + season + location + depth_asg"
+fit_nb <- function(data, outcome, rhs) {
+  dd <- data[data[[outcome]] <= 5, ]
+  suppressWarnings(tryCatch(glm.nb(as.formula(paste(outcome, "~", rhs)), data = dd), error = function(e) NULL))
+}
+fit_qp <- function(data, outcome, rhs) {   # quasi-Poisson sensitivity when theta does not converge
+  dd <- data[data[[outcome]] <= 5, ]
+  tryCatch(glm(as.formula(paste(outcome, "~", rhs)), family = quasipoisson, data = dd), error = function(e) NULL)
+}
+res <- list()
+for (oc in names(out_list)) {
+  for (qq in 0:2) {
+    div <- c("rich_q0", "hill_q1", "hill_q2")[qq + 1]
+    m1 <- fit_nb(d85, oc, paste(div, "+", covs))
+    if (is.null(m1)) next
+    res[[length(res) + 1]] <- tidy(m1, exponentiate = TRUE, conf.int = TRUE) %>%
+      filter(term == div) %>% mutate(outcome = oc, model = paste0("M1_q", qq), q_order = qq)
+    if (have_sim) {
+      red <- paste0("red_q", qq)
+      m2 <- fit_nb(d85, oc, paste(div, "+", red, "+", covs))
+      m3 <- fit_nb(d85, oc, paste(div, "+", red, "+ log_Pstercorea +", covs))
+      m1b <- fit_nb(d85, oc, paste(div, "+", covs))
+      q2 <- fit_qp(d85, oc, paste(div, "+", red, "+", covs))
+      if (!is.null(q2)) res[[length(res) + 1]] <- tidy(q2, exponentiate = TRUE, conf.int = FALSE) %>%
+        filter(term == red) %>% mutate(outcome = oc, model = paste0("M2QP_q", qq), q_order = qq)
+      if (!is.null(m2) && !is.null(m1b)) {
+        lrt <- anova(m1b, m2)
+        res[[length(res) + 1]] <- tidy(m2, exponentiate = TRUE, conf.int = TRUE) %>%
+          filter(term == red) %>% mutate(outcome = oc, model = paste0("M2_q", qq), q_order = qq, lrt_p = lrt$`Pr(Chi)`[2])
+      }
+      if (!is.null(m3)) res[[length(res) + 1]] <- tidy(m3, exponentiate = TRUE, conf.int = TRUE) %>%
+        filter(term == red) %>% mutate(outcome = oc, model = paste0("M3_q", qq), q_order = qq)
+    }
+  }
+}
+res <- bind_rows(res) %>% group_by(model) %>% mutate(q_bh = bh(p.value)) %>% ungroup()  # BH across the 4 outcomes within model
+write_csv(res, file.path(out_dir, "FR_model_results.csv"))
+print(res %>% dplyr::select(outcome, model, estimate, conf.low, conf.high, p.value, q_bh), n = Inf)
+
+# ---- 6. TIMING OF EVENTS RELATIVE TO THE DAY 85 SAMPLE (P4) -------------------
+# `Study Day` = days since enrolment. Pre-D85 = Study Day <= 85; post-D85 = Study Day > 85.
+inf_ev <- ae %>% filter(`AE Infection` == 1, `Randomisation No` %in% d85$rand_no) %>%
+  rename(rand_no = `Randomisation No`, study_day = `Study Day`)
+timing <- bind_rows(lapply(c(ARI = "AE ARI", Diarrhoea = "AE Diarrhoea", Fever = "AE Fever", Any_infection = "AE Infection"),
+  function(col) {
+    ev  <- inf_ev %>% filter(.data[[col]] == 1)
+    pre <- unique(ev$rand_no[ev$study_day <= d85_study_day])
+    all <- unique(ev$rand_no)
+    tibble(children_ever = length(all), event_on_or_before_D85 = length(pre),
+           first_event_only_after_D85 = length(setdiff(all, pre)))
+  }), .id = "outcome")
+print(timing); write_csv(timing, file.path(out_dir, "FR_event_timing.csv"))
+
+pre_any <- unique(inf_ev$rand_no[inf_ev$study_day <= d85_study_day])
+elig <- d85 %>% filter(!rand_no %in% pre_any) %>%
+  mutate(event_post = as.integer(rand_no %in% inf_ev$rand_no[inf_ev$study_day > d85_study_day]))
+cat(sprintf("P4 cohort: %d children with no infection AE on/before D85; %d with a later infection AE\n",
+            nrow(elig), sum(elig$event_post)))
+if (sum(elig$event_post) >= min_events) {
+  # With ~20 events, adjust for at most two covariates (about 10 events per parameter).
+  m_p4 <- glm(event_post ~ rich_q0 + age_enrolment + iron_arm, family = binomial, data = elig)
+  print(tidy(m_p4, exponentiate = TRUE, conf.int = TRUE) %>% filter(term == "rich_q0"))
+} else cat("Too few events for a stable model: report counts only; P4 untested.\n")
+
+# ---- 7. SENSITIVITY: richness against illness with rarefied / filtered richness ----
+for (v in c("rich_rare", "rich_filt")) {
+  m <- glm(as.formula(paste("Ill_binary ~", v, "+", covs)), family = binomial, data = d85)
+  print(tidy(m, exponentiate = TRUE, conf.int = TRUE) %>% filter(term == v) %>% mutate(metric = v))
+}
